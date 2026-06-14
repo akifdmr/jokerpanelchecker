@@ -3,20 +3,167 @@ const express = require('express');
 const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
+const crypto = require('crypto');
 const puppeteer = require('puppeteer');
 const { MongoClient } = require('mongodb');
+const JSZip = require('jszip');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const RESULTS_FILE = process.env.RESULTS_FILE || path.join(os.tmpdir(), 'panelcheckers-results.json');
+const SESSION_COOKIE = 'panelcheckers_session';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'panelcheckers-dev-secret-change-me';
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 let clients = [];
 let db = null;
+
+function normalizeUsername(username) {
+    return String(username || '').trim().toLowerCase();
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+    const hash = crypto.pbkdf2Sync(String(password), salt, 120000, 32, 'sha256').toString('hex');
+    return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedHash) {
+    if (!storedHash || !storedHash.includes(':')) return false;
+    const [salt, hash] = storedHash.split(':');
+    const candidate = hashPassword(password, salt).split(':')[1];
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(candidate, 'hex'));
+}
+
+function signValue(value) {
+    return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
+}
+
+function createSessionCookie(user) {
+    const payload = Buffer.from(JSON.stringify({
+        id: String(user._id),
+        username: user.username,
+        role: user.role
+    })).toString('base64url');
+    return `${payload}.${signValue(payload)}`;
+}
+
+function parseCookies(req) {
+    return String(req.headers.cookie || '')
+        .split(';')
+        .map(part => part.trim())
+        .filter(Boolean)
+        .reduce((acc, part) => {
+            const eq = part.indexOf('=');
+            if (eq === -1) return acc;
+            acc[part.slice(0, eq)] = decodeURIComponent(part.slice(eq + 1));
+            return acc;
+        }, {});
+}
+
+function getSessionUser(req) {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!token || !token.includes('.')) return null;
+    const [payload, signature] = token.split('.');
+    if (signature !== signValue(payload)) return null;
+    try {
+        return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function requireAuth(req, res, next) {
+    const user = getSessionUser(req);
+    if (!user) return res.status(401).json({ error: 'Giriş gerekli.' });
+    req.user = user;
+    next();
+}
+
+function requireAdmin(req, res, next) {
+    if (req.user && req.user.role === 'admin') return next();
+    return res.status(403).json({ error: 'Admin yetkisi gerekli.' });
+}
+
+function getResultsFile(userId) {
+    const suffix = String(userId || 'anon').replace(/[^a-zA-Z0-9_-]/g, '');
+    return RESULTS_FILE.replace(/\.json$/i, `-${suffix}.json`);
+}
+
+function maskPassword(password) {
+    const value = String(password || '');
+    if (!value) return '';
+    if (value.length <= 2) return '*'.repeat(value.length);
+    return `${value.slice(0, 1)}${'*'.repeat(Math.max(value.length - 2, 2))}${value.slice(-1)}`;
+}
+
+function getDomainFromUrl(value) {
+    try {
+        return new URL(normalizeUrl(value)).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+        return '';
+    }
+}
+
+async function initializeAuthCollections() {
+    if (!db) return;
+    const users = db.collection('users');
+    await users.createIndex({ username: 1 }, { unique: true });
+    await db.collection('check_results').createIndex({ ownerUserId: 1, createdAt: -1 });
+    await db.collection('successful_logins').createIndex({ ownerUserId: 1, createdAt: -1 });
+
+    const seeds = [];
+    if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
+        seeds.push({
+            username: normalizeUsername(process.env.ADMIN_USERNAME),
+            role: 'admin',
+            passwordHash: hashPassword(process.env.ADMIN_PASSWORD),
+            createdAt: new Date()
+        });
+    }
+    if (process.env.USER_USERNAME && process.env.USER_PASSWORD) {
+        seeds.push({
+            username: normalizeUsername(process.env.USER_USERNAME),
+            role: 'user',
+            passwordHash: hashPassword(process.env.USER_PASSWORD),
+            createdAt: new Date()
+        });
+    }
+
+    if (!IS_PRODUCTION && seeds.length === 0) {
+        seeds.push(
+            { username: 'admin', role: 'admin', passwordHash: hashPassword('admin123'), createdAt: new Date() },
+            { username: 'user', role: 'user', passwordHash: hashPassword('user123'), createdAt: new Date() }
+        );
+        console.log('⚠ Dev kullanıcıları oluşturuldu: admin/admin123 ve user/user123');
+    }
+
+    if (seeds.length > 0) {
+        for (const seed of seeds) {
+            await users.updateOne(
+                { username: seed.username },
+                {
+                    $set: {
+                        role: seed.role,
+                        passwordHash: seed.passwordHash,
+                        updatedAt: new Date()
+                    },
+                    $setOnInsert: {
+                        createdAt: seed.createdAt
+                    }
+                },
+                { upsert: true }
+            );
+        }
+        console.log(`✅ ${seeds.length} auth kullanıcısı env değerlerine göre hazırlandı`);
+    } else {
+        const existingUsers = await users.countDocuments();
+        console.log(`✅ Auth kullanıcıları MongoDB'den okunacak. Kayıtlı kullanıcı: ${existingUsers}`);
+    }
+}
 
 // ------------------ MONGODB BAĞLANTISI (X509 SERTİFİKA DESTEKLİ) ------------------
 async function connectMongo() {
@@ -51,6 +198,7 @@ async function connectMongo() {
         const client = new MongoClient(uri, options);
         await client.connect();
         db = client.db();
+        await initializeAuthCollections();
         console.log('✅ MongoDB bağlantısı başarılı');
         return client;
     } catch (err) {
@@ -64,20 +212,25 @@ async function connectMongo() {
 }
 
 // ------------------ LOG + SSE ------------------
-function sendLog(msg, type = 'info') {
-    const logEntry = { timestamp: new Date().toISOString(), message: msg, type };
-    clients = clients.filter(c => !c.destroyed);
-    clients.forEach(c => c.write(`data: ${JSON.stringify(logEntry)}\n\n`));
+function canReceiveLog(client, ownerUserId) {
+    if (!ownerUserId) return true;
+    return client.user.role === 'admin' || client.user.id === ownerUserId;
+}
+
+function sendLog(msg, type = 'info', ownerUserId = null) {
+    const logEntry = { timestamp: new Date().toISOString(), message: msg, type, ownerUserId };
+    clients = clients.filter(c => !c.res.destroyed);
+    clients.filter(c => canReceiveLog(c, ownerUserId)).forEach(c => c.res.write(`data: ${JSON.stringify(logEntry)}\n\n`));
     console.log(msg);
 }
 
-app.get('/api/log-stream', (req, res) => {
+app.get('/api/log-stream', requireAuth, (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
-    clients.push(res);
+    clients.push({ res, user: req.user });
     req.on('close', () => {
-        clients = clients.filter(c => c !== res);
+        clients = clients.filter(c => c.res !== res);
     });
 });
 
@@ -86,8 +239,39 @@ app.get('/health', (req, res) => {
         ok: true,
         service: 'panelcheckers',
         db: db ? 'connected' : 'disabled',
+        auth: db ? 'enabled' : 'disabled',
         uptime: process.uptime()
     });
+});
+
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        if (!db) return res.status(503).json({ error: 'DB bağlantısı yok, giriş yapılamaz.' });
+        const username = normalizeUsername(req.body && req.body.username);
+        const password = String((req.body && req.body.password) || '');
+        if (!username || !password) return res.status(400).json({ error: 'Kullanıcı adı ve şifre gerekli.' });
+
+        const user = await db.collection('users').findOne({ username });
+        if (!user || !verifyPassword(password, user.passwordHash)) {
+            return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı.' });
+        }
+
+        const cookie = createSessionCookie(user);
+        const secure = IS_PRODUCTION ? '; Secure' : '';
+        res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
+        res.json({ user: { id: String(user._id), username: user.username, role: user.role } });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+    res.json({ ok: true });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+    res.json({ user: req.user });
 });
 
 // ------------------ URL DÜZELTME ------------------
@@ -102,6 +286,7 @@ function normalizeUrl(url) {
 function parseCredentialLine(line) {
     line = line.trim();
     if (!line) return null;
+    if (line.startsWith('###')) return null;
 
     let url = null;
     let username = null;
@@ -144,28 +329,50 @@ function parseCredentialLine(line) {
     return { url, username, password };
 }
 
+function buildStoredResult(result, owner) {
+    return {
+        ownerUserId: owner.id,
+        ownerUsername: owner.username,
+        ownerRole: owner.role,
+        url: result.baseUrl,
+        domain: getDomainFromUrl(result.baseUrl),
+        username: result.username,
+        passwordMasked: maskPassword(result.password),
+        passwordLength: String(result.password || '').length,
+        success: Boolean(result.success),
+        message: result.message || '',
+        checkedAt: result.timestamp ? new Date(result.timestamp) : new Date(),
+        createdAt: new Date()
+    };
+}
+
+async function saveCheckResult(result, owner) {
+    if (!db) return;
+    try {
+        await db.collection('check_results').insertOne(buildStoredResult(result, owner));
+    } catch (err) {
+        console.error('Check sonucu kayıt hatası:', err);
+        sendLog(`❌ Check sonucu kayıt hatası: ${err.message}`, 'error', owner.id);
+    }
+}
+
 // ------------------ BAŞARILI GİRİŞİ MONGODB'YE KAYDET ------------------
-async function saveSuccessfulLogin(baseUrl, username, password) {
+async function saveSuccessfulLogin(result, owner) {
     if (!db) return;
     try {
         const collection = db.collection('successful_logins');
-        await collection.insertOne({
-            url: baseUrl,
-            username: username,
-            password: password,
-            timestamp: new Date(),
-            createdAt: new Date()
-        });
-        sendLog(`💾 Başarılı giriş MongoDB'ye kaydedildi: ${username} @ ${baseUrl}`, 'success');
+        await collection.insertOne(buildStoredResult(result, owner));
+        sendLog(`💾 Başarılı giriş MongoDB'ye kaydedildi: ${result.username} @ ${result.baseUrl}`, 'success', owner.id);
     } catch (err) {
         console.error('MongoDB kayıt hatası:', err);
-        sendLog(`❌ MongoDB kayıt hatası: ${err.message}`, 'error');
+        sendLog(`❌ MongoDB kayıt hatası: ${err.message}`, 'error', owner.id);
     }
 }
 
 // ------------------ TEK PENCEREDE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
-async function runAllTests(testItems) {
-    await fs.writeFile(RESULTS_FILE, '[]');
+async function runAllTests(testItems, owner) {
+    const resultsFile = getResultsFile(owner.id);
+    await fs.writeFile(resultsFile, '[]');
 
     const browser = await puppeteer.launch({
         headless: IS_PRODUCTION ? 'new' : false,
@@ -179,11 +386,11 @@ async function runAllTests(testItems) {
     const page = await browser.newPage();
     const results = [];
     const total = testItems.length;
-    sendLog(`🚀 BAŞLANGIÇ – ${total} test (tek pencere, yavaş mod 250ms)`, 'info');
+    sendLog(`🚀 BAŞLANGIÇ – ${total} test (tek pencere, yavaş mod 250ms)`, 'info', owner.id);
 
     for (let i = 0; i < total; i++) {
         const { baseUrl, username, password } = testItems[i];
-        sendLog(`📌 Test ${i+1}/${total}: ${username} @ ${baseUrl}`, 'info');
+        sendLog(`📌 Test ${i+1}/${total}: ${username} @ ${baseUrl}`, 'info', owner.id);
 
         const result = {
             baseUrl,
@@ -235,10 +442,10 @@ async function runAllTests(testItems) {
 
             result.success = success;
             result.message = success ? 'LOGIN OK' : 'LOGIN FAIL';
-            sendLog(success ? `✅ BAŞARILI ${username}` : `❌ BAŞARISIZ ${username}`, success ? 'success' : 'fail');
+            sendLog(success ? `✅ BAŞARILI ${username}` : `❌ BAŞARISIZ ${username}`, success ? 'success' : 'fail', owner.id);
 
             if (success) {
-                await saveSuccessfulLogin(baseUrl, username, password);
+                await saveSuccessfulLogin(result, owner);
             }
 
             const client = await page.target().createCDPSession();
@@ -247,90 +454,72 @@ async function runAllTests(testItems) {
 
         } catch (err) {
             result.message = err.message;
-            sendLog(`⚠ HATA ${username}: ${err.message}`, 'error');
+            sendLog(`⚠ HATA ${username}: ${err.message}`, 'error', owner.id);
         }
 
         results.push(result);
-        await fs.writeFile(RESULTS_FILE, JSON.stringify(results, null, 2));
+        await saveCheckResult(result, owner);
+        await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
         await new Promise(resolve => setTimeout(resolve, 3000)); // test arası 2sn → 3sn
     }
 
     await browser.close();
     const okCount = results.filter(x => x.success).length;
-    sendLog(`🏁 BİTİŞ – Başarılı: ${okCount} / Başarısız: ${total - okCount}`, 'info');
+    sendLog(`🏁 BİTİŞ – Başarılı: ${okCount} / Başarısız: ${total - okCount}`, 'info', owner.id);
     return results;
 }
 
 // ------------------ API ------------------
-app.post('/api/start', async (req, res) => {
+app.post('/api/start', requireAuth, async (req, res) => {
     try {
-        let { baseUrlsText, credsText } = req.body;
-        baseUrlsText = baseUrlsText || '';
+        let { credsText } = req.body;
         credsText = credsText || '';
 
-        const baseUrls = baseUrlsText.split('\n').map(l => l.trim()).filter(Boolean);
-        const rawCredLines = credsText.split('\n').map(l => l.trim()).filter(Boolean);
+        const rawCredLines = credsText.split('\n')
+            .map(l => l.trim())
+            .filter(l => l && !l.startsWith('###'));
 
         const parsedCreds = [];
         for (const line of rawCredLines) {
             const p = parseCredentialLine(line);
-            if (p && p.username) {
+            if (p && p.url && p.username) {
                 parsedCreds.push(p);
             } else {
-                sendLog(`⚠ Geçersiz satır atlandı: ${line}`, 'error');
+                sendLog(`⚠ Geçersiz satır atlandı: ${line}`, 'error', req.user.id);
             }
         }
 
-        let testItems = [];
-        if (baseUrls.length > 0) {
-            for (const baseUrl of baseUrls) {
-                for (const cred of parsedCreds) {
-                    testItems.push({
-                        baseUrl: baseUrl,
-                        username: cred.username,
-                        password: cred.password || ''
-                    });
-                }
-            }
-        } else {
-            for (const cred of parsedCreds) {
-                if (cred.url) {
-                    testItems.push({
-                        baseUrl: cred.url,
-                        username: cred.username,
-                        password: cred.password || ''
-                    });
-                } else {
-                    sendLog(`⚠ Atlanan credential (URL yok): ${cred.username}`, 'error');
-                }
-            }
-        }
+        const testItems = parsedCreds.map(cred => ({
+            baseUrl: cred.url,
+            username: cred.username,
+            password: cred.password || ''
+        }));
 
         if (testItems.length === 0) {
-            return res.status(400).json({ error: 'Geçerli test verisi yok.' });
+            return res.status(400).json({ error: 'Geçerli test verisi yok. Format: url:user:pass' });
         }
 
-        await fs.writeFile(RESULTS_FILE, '[]');
+        await fs.writeFile(getResultsFile(req.user.id), '[]');
         res.json({ message: 'Test başladı', total: testItems.length });
-        runAllTests(testItems);
+        runAllTests(testItems, req.user);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: err.message });
     }
 });
 
-app.get('/api/results', async (req, res) => {
+app.get('/api/results', requireAuth, async (req, res) => {
     try {
-        const data = await fs.readFile(RESULTS_FILE, 'utf8');
+        const data = await fs.readFile(getResultsFile(req.user.id), 'utf8');
         res.json(JSON.parse(data));
     } catch {
         res.json([]);
     }
 });
 
-app.get('/api/download', async (req, res) => {
+app.get('/api/download', requireAuth, async (req, res) => {
     try {
-        const data = JSON.parse(await fs.readFile(RESULTS_FILE, 'utf8'));
+        const data = JSON.parse(await fs.readFile(getResultsFile(req.user.id), 'utf8'));
         const success = data.filter(x => x.success);
         const fail = data.filter(x => !x.success);
         let output = '✅ BAŞARILI\n\n';
@@ -344,9 +533,89 @@ app.get('/api/download', async (req, res) => {
     }
 });
 
-app.delete('/api/results', async (req, res) => {
+function safeDomainFilename(domain) {
+    return String(domain || 'domainsiz')
+        .toLowerCase()
+        .replace(/^www\./, '')
+        .replace(/[^a-z0-9.-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'domainsiz';
+}
+
+app.post('/api/group-download', requireAuth, async (req, res) => {
     try {
-        await fs.writeFile(RESULTS_FILE, '[]');
+        const groups = req.body && req.body.groups;
+        if (!Array.isArray(groups) || groups.length === 0) {
+            return res.status(400).json({ error: 'Gruplanacak veri yok.' });
+        }
+
+        const zip = new JSZip();
+        let fileCount = 0;
+        for (const group of groups) {
+            const domain = safeDomainFilename(group.domain);
+            const lines = Array.isArray(group.lines)
+                ? group.lines.map(line => String(line || '').trim()).filter(Boolean)
+                : [];
+            if (!lines.length) continue;
+            zip.file(`${domain}.txt`, lines.join('\n') + '\n');
+            fileCount += 1;
+        }
+
+        if (fileCount === 0) {
+            return res.status(400).json({ error: 'Gruplanacak satır yok.' });
+        }
+
+        const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', 'attachment; filename=domain-bazli-listeler.zip');
+        res.send(buffer);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+async function historyQueryForUser(req, onlySuccessful = false) {
+    if (!db) return [];
+    const collection = db.collection(onlySuccessful ? 'successful_logins' : 'check_results');
+    const query = {};
+    if (req.user.role !== 'admin') query.ownerUserId = req.user.id;
+    return collection.find(query, {
+        projection: {
+            passwordLength: 0
+        }
+    }).sort({ createdAt: -1 }).limit(500).toArray();
+}
+
+app.get('/api/history/checks', requireAuth, async (req, res) => {
+    try {
+        res.json(await historyQueryForUser(req, false));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/history/successful', requireAuth, async (req, res) => {
+    try {
+        res.json(await historyQueryForUser(req, true));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.json([]);
+        const users = await db.collection('users').find({}, {
+            projection: { passwordHash: 0 }
+        }).sort({ username: 1 }).toArray();
+        res.json(users);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/results', requireAuth, async (req, res) => {
+    try {
+        await fs.writeFile(getResultsFile(req.user.id), '[]');
         res.json({ ok: true });
     } catch {
         res.status(500).json({ error: 'Silme hatası' });

@@ -11,3 +11,11 @@ services:
         value: production
       - key: PUPPETEER_CACHE_DIR
         value: /opt/render/.cache/puppeteer
+      - key: DATABASE_URL
+        sync: false
+      - key: MONGODB_USERNAME
+        sync: false
+      - key: MONGODB_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
