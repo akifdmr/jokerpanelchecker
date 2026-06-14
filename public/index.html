@@ -226,7 +226,7 @@
             showLogin();
             return;
         }
-        const data = await res.json();
+        const data = await readJson(res, 'Oturum bilgisi okunamadı.');
         showApp(data.user);
         connectLogStream();
         await clearAll();
@@ -244,7 +244,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password })
         });
-        const data = await res.json().catch(() => ({}));
+        const data = await readJson(res, 'Giriş cevabı okunamadı.').catch(err => ({ error: err.message }));
         if (!res.ok) {
             note.textContent = data.error || 'Giriş başarısız.';
             return;
@@ -266,7 +266,12 @@
         if (eventSource) eventSource.close();
         eventSource = new EventSource('/api/log-stream');
         eventSource.onmessage = (e) => {
-            const log = JSON.parse(e.data);
+            let log = null;
+            try {
+                log = JSON.parse(e.data);
+            } catch {
+                return;
+            }
             const div = document.createElement('div');
             div.className = `log-${log.type}`;
             div.innerHTML = `[${log.timestamp.slice(11,19)}] ${log.message}`;
@@ -388,7 +393,7 @@
             body: JSON.stringify({ groups })
         });
         if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
+            const err = await readJson(res, 'ZIP hata cevabı okunamadı.').catch(() => ({}));
             throw new Error(err.error || 'ZIP indirilemedi');
         }
         const blob = await res.blob();
@@ -425,7 +430,11 @@
     async function clearAll() {
         tbody.innerHTML = '';
         logPanel.innerHTML = '<div>🧹 Temizlendi - Yeni teste hazır</div>';
-        await apiFetch('/api/results', { method: 'DELETE' });
+        const res = await apiFetch('/api/results', { method: 'DELETE' });
+        if (!res.ok) {
+            const err = await readJson(res, 'Temizleme cevabı okunamadı.').catch(() => ({}));
+            throw new Error(err.error || `Temizleme başarısız. HTTP ${res.status}`);
+        }
         if (refreshTimer) {
             clearInterval(refreshTimer);
             refreshTimer = null;
@@ -476,7 +485,11 @@
         currentHistoryType = type;
         const endpoint = type === 'checks' ? '/api/history/checks' : '/api/history/successful';
         const res = await apiFetch(endpoint);
-        historyRows = await res.json();
+        if (!res.ok) {
+            const err = await readJson(res, 'Geçmiş cevabı okunamadı.').catch(() => ({}));
+            throw new Error(err.error || `Geçmiş alınamadı. HTTP ${res.status}`);
+        }
+        historyRows = await readJson(res, 'Geçmiş okunamadı.');
         document.getElementById('historyTitle').textContent = type === 'checks'
             ? '📁 Tüm Check Geçmişi'
             : '📁 Başarılı Geçmiş';
