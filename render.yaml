@@ -19,3 +19,11 @@ services:
         sync: false
       - key: SESSION_SECRET
         sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: USER_USERNAME
+        sync: false
+      - key: USER_PASSWORD
+        sync: false
