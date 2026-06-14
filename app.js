@@ -21,6 +21,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 let clients = [];
 let db = null;
+let mongoStatus = {
+    configured: false,
+    attempted: false,
+    connected: false,
+    error: null
+};
 
 function normalizeUsername(username) {
     return String(username || '').trim().toLowerCase();
@@ -173,8 +179,15 @@ async function initializeAuthCollections() {
 async function connectMongo() {
     try {
         const uri = process.env.MONGODB_CONNECTIONSTRING || process.env.DATABASE_URL;
+        mongoStatus = {
+            configured: Boolean(uri),
+            attempted: Boolean(uri),
+            connected: false,
+            error: null
+        };
         if (!uri) {
             console.log('⚠ MongoDB connection string bulunamadı, veritabanı kaydı yapılmayacak.');
+            mongoStatus.error = 'MongoDB connection string missing';
             return;
         }
 
@@ -199,9 +212,13 @@ async function connectMongo() {
             };
         }
 
-        const client = new MongoClient(uri, options);
+        const client = new MongoClient(uri, {
+            ...options,
+            serverSelectionTimeoutMS: 15000
+        });
         await client.connect();
         db = client.db();
+        mongoStatus.connected = true;
         await initializeAuthCollections();
         console.log('✅ MongoDB bağlantısı başarılı');
         return client;
@@ -211,6 +228,8 @@ async function connectMongo() {
             console.error('X509 sertifika hatası. Lütfen geçerli bir sertifika dosyası sağlayın (MONGODB_CERT_PATH) veya farklı bir auth mekanizması kullanın.');
         }
         db = null;
+        mongoStatus.connected = false;
+        mongoStatus.error = err.message;
         return null;
     }
 }
@@ -244,6 +263,18 @@ app.get('/health', (req, res) => {
         service: 'panelcheckers',
         db: db ? 'connected' : 'disabled',
         auth: db ? 'enabled' : 'disabled',
+        mongo: {
+            configured: mongoStatus.configured,
+            attempted: mongoStatus.attempted,
+            connected: mongoStatus.connected,
+            error: mongoStatus.error,
+            env: {
+                DATABASE_URL: Boolean(process.env.DATABASE_URL),
+                MONGODB_CONNECTIONSTRING: Boolean(process.env.MONGODB_CONNECTIONSTRING),
+                MONGODB_USERNAME: Boolean(process.env.MONGODB_USERNAME),
+                MONGODB_PASSWORD: Boolean(process.env.MONGODB_PASSWORD)
+            }
+        },
         uptime: process.uptime()
     });
 });
