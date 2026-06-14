@@ -16,7 +16,8 @@
         button.secondary:hover { background: #224a42; }
         button.danger { background: #7d2d2d; }
         button.danger:hover { background: #561b1b; }
-        input { width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; }
+        button.active { background: #111827; }
+        input, select { width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; background: white; }
         .hidden { display: none; }
         .auth-card { max-width: 430px; margin: 80px auto; }
         .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
@@ -34,7 +35,22 @@
         .ok { background: #d4edda; }
         .fail { background: #f8d7da; }
         .table-wrapper { max-height: 500px; overflow-y: auto; }
+        .history-toolbar { display: grid; grid-template-columns: 1.4fr 180px 180px; gap: 12px; margin: 12px 0; align-items: end; }
+        .history-summary { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+        .summary-box { border: 1px solid #d9e1ec; border-radius: 12px; padding: 10px 12px; background: #f8fafc; min-width: 130px; }
+        .summary-box b { display: block; font-size: 18px; color: #18253a; }
+        .summary-box span { font-size: 12px; color: #596579; }
+        .muted { color: #667085; font-size: 12px; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+        .status-pill { display: inline-block; border-radius: 999px; padding: 4px 8px; font-weight: 700; font-size: 12px; }
+        .status-ok { background: #bfe8ca; color: #175b2a; }
+        .status-fail { background: #f5c2c7; color: #842029; }
+        .history-table th, .history-table td { vertical-align: top; }
+        .history-table td:nth-child(2), .history-table td:nth-child(4), .history-table td:nth-child(7) { max-width: 240px; overflow-wrap: anywhere; }
         .note { font-size: 12px; color: #666; margin-top: 8px; }
+        @media (max-width: 850px) {
+            .history-toolbar { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -93,15 +109,55 @@
     </div>
 
     <div class="card">
-        <h3>📁 Geçmiş</h3>
-        <div style="margin-bottom: 12px;">
-            <button onclick="loadHistory('checks')">TÜM CHECK GEÇMİŞİ</button>
-            <button class="secondary" onclick="loadHistory('successful')">BAŞARILI GEÇMİŞ</button>
+        <h3 id="historyTitle">📁 Geçmiş</h3>
+        <div class="muted" id="historyScope"></div>
+        <div style="margin: 12px 0;">
+            <button id="historyChecksBtn" onclick="loadHistory('checks')">TÜM CHECK GEÇMİŞİ</button>
+            <button id="historySuccessBtn" class="secondary" onclick="loadHistory('successful')">BAŞARILI GEÇMİŞ</button>
+        </div>
+        <div class="history-toolbar">
+            <div>
+                <label><b>Arama</b></label>
+                <input id="historySearch" placeholder="Kullanıcı, URL, login, domain veya mesaj ara" oninput="renderHistory()">
+            </div>
+            <div>
+                <label><b>Durum</b></label>
+                <select id="historyStatusFilter" onchange="renderHistory()">
+                    <option value="all">Tümü</option>
+                    <option value="success">Başarılı</option>
+                    <option value="fail">Başarısız</option>
+                </select>
+            </div>
+            <div>
+                <label><b>Kayıt</b></label>
+                <select id="historyLimitFilter" onchange="renderHistory()">
+                    <option value="50">Son 50</option>
+                    <option value="100">Son 100</option>
+                    <option value="250">Son 250</option>
+                    <option value="500">Son 500</option>
+                </select>
+            </div>
+        </div>
+        <div class="history-summary">
+            <div class="summary-box"><b id="historyTotal">0</b><span>Toplam kayıt</span></div>
+            <div class="summary-box"><b id="historyOk">0</b><span>Başarılı</span></div>
+            <div class="summary-box"><b id="historyFail">0</b><span>Başarısız</span></div>
+            <div class="summary-box"><b id="historyUsers">0</b><span>Kullanıcı</span></div>
         </div>
         <div class="table-wrapper">
-            <table>
+            <table class="history-table">
                 <thead>
-                    <tr><th>Kullanıcı</th><th>URL</th><th>Login</th><th>Şifre</th><th>Durum</th><th>Zaman</th></tr>
+                    <tr>
+                        <th>Zaman</th>
+                        <th>Kullanıcı</th>
+                        <th>Rol</th>
+                        <th>Domain</th>
+                        <th>URL</th>
+                        <th>Login</th>
+                        <th>Şifre</th>
+                        <th>Durum</th>
+                        <th>Mesaj</th>
+                    </tr>
                 </thead>
                 <tbody id="historyBody"></tbody>
             </table>
@@ -118,6 +174,8 @@
     let refreshTimer = null;
     let totalTests = 0;
     let currentUser = null;
+    let historyRows = [];
+    let currentHistoryType = 'checks';
 
     async function apiFetch(url, options = {}) {
         const res = await fetch(url, options);
@@ -141,6 +199,9 @@
         document.getElementById('appRoot').classList.remove('hidden');
         document.getElementById('roleBadge').textContent = user.role.toUpperCase();
         document.getElementById('userLabel').textContent = user.username;
+        document.getElementById('historyScope').textContent = user.role === 'admin'
+            ? 'Admin görünümü: tüm kullanıcıların yaptığı check kayıtları listelenir.'
+            : 'Kullanıcı görünümü: sadece kendi yaptığınız check kayıtları listelenir.';
     }
 
     async function checkSession() {
@@ -154,7 +215,7 @@
         connectLogStream();
         await clearAll();
         await refreshResults();
-        await loadHistory('successful');
+        await loadHistory('checks');
     }
 
     async function login() {
@@ -177,7 +238,7 @@
         connectLogStream();
         await clearAll();
         await refreshResults();
-        await loadHistory('successful');
+        await loadHistory('checks');
     }
 
     async function logout() {
@@ -378,25 +439,74 @@
 
     async function loadHistory(type) {
         if (!currentUser) return;
+        currentHistoryType = type;
         const endpoint = type === 'checks' ? '/api/history/checks' : '/api/history/successful';
         const res = await apiFetch(endpoint);
-        const data = await res.json();
+        historyRows = await res.json();
+        document.getElementById('historyTitle').textContent = type === 'checks'
+            ? '📁 Tüm Check Geçmişi'
+            : '📁 Başarılı Geçmiş';
+        document.getElementById('historyChecksBtn').classList.toggle('active', type === 'checks');
+        document.getElementById('historySuccessBtn').classList.toggle('active', type === 'successful');
+        renderHistory();
+    }
+
+    function renderHistory() {
+        const search = document.getElementById('historySearch').value.trim().toLowerCase();
+        const status = document.getElementById('historyStatusFilter').value;
+        const limit = Number(document.getElementById('historyLimitFilter').value || 50);
+        const scopedRows = historyRows.filter(item => {
+            if (status === 'success' && !item.success) return false;
+            if (status === 'fail' && item.success) return false;
+            if (!search) return true;
+            const text = [
+                item.ownerUsername,
+                item.ownerRole,
+                item.domain,
+                item.url,
+                item.username,
+                item.passwordMasked,
+                item.message,
+                item.success ? 'başarılı success ok' : 'başarısız fail hata'
+            ].join(' ').toLowerCase();
+            return text.includes(search);
+        });
+        const data = scopedRows.slice(0, limit);
+
+        updateHistorySummary(scopedRows);
         historyBody.innerHTML = '';
         if (!data.length) {
-            historyBody.innerHTML = '<tr><td colspan="6">Kayıt yok</td></tr>';
+            historyBody.innerHTML = '<tr><td colspan="9">Kayıt yok</td></tr>';
             return;
         }
         data.forEach(item => {
+            const createdAt = item.createdAt || item.checkedAt;
+            const timeText = createdAt ? new Date(createdAt).toLocaleString() : '';
+            const statusClass = item.success ? 'status-ok' : 'status-fail';
+            const statusText = item.success ? 'BAŞARILI' : 'BAŞARISIZ';
             const row = `<tr class="${item.success ? 'ok' : 'fail'}">
+                <td class="mono">${escapeHtml(timeText)}</td>
                 <td>${escapeHtml(item.ownerUsername || currentUser.username)}</td>
+                <td>${escapeHtml(item.ownerRole || '')}</td>
+                <td>${escapeHtml(item.domain || getDomain(item.url || ''))}</td>
                 <td>${escapeHtml(item.url)}</td>
                 <td>${escapeHtml(item.username)}</td>
                 <td>${escapeHtml(item.passwordMasked)}</td>
-                <td>${item.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ'}</td>
-                <td>${escapeHtml(new Date(item.createdAt || item.checkedAt).toLocaleString())}</td>
+                <td><span class="status-pill ${statusClass}">${statusText}</span></td>
+                <td>${escapeHtml(item.message || '')}</td>
             </tr>`;
             historyBody.insertAdjacentHTML('beforeend', row);
         });
+    }
+
+    function updateHistorySummary(rows) {
+        const ok = rows.filter(item => item.success).length;
+        const fail = rows.length - ok;
+        const users = new Set(rows.map(item => item.ownerUsername || currentUser.username).filter(Boolean)).size;
+        document.getElementById('historyTotal').textContent = rows.length;
+        document.getElementById('historyOk').textContent = ok;
+        document.getElementById('historyFail').textContent = fail;
+        document.getElementById('historyUsers').textContent = users;
     }
 
     window.onload = async () => {

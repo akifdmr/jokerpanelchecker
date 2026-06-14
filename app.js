@@ -108,6 +108,10 @@ function getDomainFromUrl(value) {
     }
 }
 
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function initializeAuthCollections() {
     if (!db) return;
     const users = db.collection('users');
@@ -404,7 +408,7 @@ async function runAllTests(testItems, owner) {
         try {
             const url = normalizeUrl(baseUrl);
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
-            await page.waitForTimeout(1000);
+            await delay(1000);
 
             let userInput = await page.$('input[type="text"], input[name="username"], input[name="email"], input[name="user"], input[id*="user"], input[id*="email"], input[id="userid"]');
             let passInput = await page.$('input[type="password"]');
@@ -419,7 +423,7 @@ async function runAllTests(testItems, owner) {
             await passInput.type(password);
             await submitBtn.click();
 
-            await page.waitForTimeout(3000);
+            await delay(3000);
             const finalUrl = page.url();
             const html = await page.content().catch(() => '');
 
