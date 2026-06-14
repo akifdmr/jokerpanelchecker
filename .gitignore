@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.*
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime/checker output
+results.json
+formatted_list.txt
+
+# Local browser/driver binaries
+chromedriver/
