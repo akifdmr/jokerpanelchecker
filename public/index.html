@@ -163,6 +163,31 @@
             </table>
         </div>
     </div>
+
+    <div class="card hidden" id="sessionLogsCard">
+        <h3>🔎 Oturum Logları</h3>
+        <div class="muted">Admin görünümü: giriş, hatalı giriş ve çıkış kayıtları.</div>
+        <div style="margin: 12px 0;">
+            <button onclick="loadSessionLogs()">YENİLE</button>
+        </div>
+        <div class="table-wrapper">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Zaman</th>
+                        <th>Kullanıcı</th>
+                        <th>Rol</th>
+                        <th>Olay</th>
+                        <th>Sonuç</th>
+                        <th>IP</th>
+                        <th>Sebep</th>
+                        <th>Tarayıcı</th>
+                    </tr>
+                </thead>
+                <tbody id="sessionLogsBody"></tbody>
+            </table>
+        </div>
+    </div>
     </div>
 </div>
 
@@ -170,6 +195,7 @@
     const tbody = document.getElementById('tableBody');
     const logPanel = document.getElementById('logPanel');
     const historyBody = document.getElementById('historyBody');
+    const sessionLogsBody = document.getElementById('sessionLogsBody');
     let eventSource = null;
     let refreshTimer = null;
     let totalTests = 0;
@@ -207,6 +233,7 @@
         if (eventSource) eventSource.close();
         document.getElementById('loginCard').classList.remove('hidden');
         document.getElementById('appRoot').classList.add('hidden');
+        document.getElementById('sessionLogsCard').classList.add('hidden');
     }
 
     function showApp(user) {
@@ -218,6 +245,7 @@
         document.getElementById('historyScope').textContent = user.role === 'admin'
             ? 'Admin görünümü: tüm kullanıcıların yaptığı check kayıtları listelenir.'
             : 'Kullanıcı görünümü: sadece kendi yaptığınız check kayıtları listelenir.';
+        document.getElementById('sessionLogsCard').classList.toggle('hidden', user.role !== 'admin');
     }
 
     async function checkSession() {
@@ -232,6 +260,7 @@
         await clearAll();
         await refreshResults();
         await loadHistory('checks');
+        if (data.user.role === 'admin') await loadSessionLogs();
     }
 
     async function login() {
@@ -255,6 +284,7 @@
         await clearAll();
         await refreshResults();
         await loadHistory('checks');
+        if (data.user.role === 'admin') await loadSessionLogs();
     }
 
     async function logout() {
@@ -500,6 +530,42 @@
         document.getElementById('historyChecksBtn').classList.toggle('active', type === 'checks');
         document.getElementById('historySuccessBtn').classList.toggle('active', type === 'successful');
         renderHistory();
+    }
+
+    function sessionEventLabel(event) {
+        if (event === 'login_success') return 'GİRİŞ';
+        if (event === 'login_failed') return 'HATALI GİRİŞ';
+        if (event === 'logout') return 'ÇIKIŞ';
+        return event || '';
+    }
+
+    async function loadSessionLogs() {
+        if (!currentUser || currentUser.role !== 'admin') return;
+        const res = await apiFetch('/api/admin/session-logs');
+        if (!res.ok) {
+            const err = await readJson(res, 'Oturum logları cevabı okunamadı.').catch(() => ({}));
+            showInlineError(err.error || `Oturum logları alınamadı. HTTP ${res.status}`);
+            return;
+        }
+        const logs = await readJson(res, 'Oturum logları okunamadı.');
+        sessionLogsBody.innerHTML = '';
+        if (!logs.length) {
+            sessionLogsBody.innerHTML = '<tr><td colspan="8">Kayıt yok</td></tr>';
+            return;
+        }
+        logs.forEach(item => {
+            const row = `<tr class="${item.success ? 'ok' : 'fail'}">
+                <td class="mono">${escapeHtml(item.createdAt ? new Date(item.createdAt).toLocaleString() : '')}</td>
+                <td>${escapeHtml(item.username)}</td>
+                <td>${escapeHtml(item.role || '')}</td>
+                <td>${escapeHtml(sessionEventLabel(item.event))}</td>
+                <td>${item.success ? 'BAŞARILI' : 'BAŞARISIZ'}</td>
+                <td>${escapeHtml(item.ip || '')}</td>
+                <td>${escapeHtml(item.reason || '')}</td>
+                <td>${escapeHtml(item.userAgent || '')}</td>
+            </tr>`;
+            sessionLogsBody.insertAdjacentHTML('beforeend', row);
+        });
     }
 
     function renderHistory() {

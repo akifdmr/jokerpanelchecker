@@ -124,6 +124,8 @@ async function initializeAuthCollections() {
     await users.createIndex({ username: 1 }, { unique: true });
     await db.collection('check_results').createIndex({ ownerUserId: 1, createdAt: -1 });
     await db.collection('successful_logins').createIndex({ ownerUserId: 1, createdAt: -1 });
+    await db.collection('session_logs').createIndex({ createdAt: -1 });
+    await db.collection('session_logs').createIndex({ username: 1, createdAt: -1 });
 
     const seeds = [];
     if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
@@ -172,6 +174,31 @@ async function initializeAuthCollections() {
     } else {
         const existingUsers = await users.countDocuments();
         console.log(`✅ Auth kullanıcıları MongoDB'den okunacak. Kayıtlı kullanıcı: ${existingUsers}`);
+    }
+}
+
+function getRequestIp(req) {
+    return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+        .split(',')[0]
+        .trim();
+}
+
+async function saveSessionLog(req, event, details = {}) {
+    if (!db) return;
+    try {
+        await db.collection('session_logs').insertOne({
+            event,
+            userId: details.userId || null,
+            username: normalizeUsername(details.username),
+            role: details.role || null,
+            success: event === 'login_success' || event === 'logout',
+            reason: details.reason || '',
+            ip: getRequestIp(req),
+            userAgent: String(req.headers['user-agent'] || ''),
+            createdAt: new Date()
+        });
+    } catch (err) {
+        console.error('Session log kayıt hatası:', err.message);
     }
 }
 
@@ -284,23 +311,40 @@ app.post('/api/auth/login', async (req, res) => {
         if (!db) return res.status(503).json({ error: 'DB bağlantısı yok, giriş yapılamaz.' });
         const username = normalizeUsername(req.body && req.body.username);
         const password = String((req.body && req.body.password) || '');
-        if (!username || !password) return res.status(400).json({ error: 'Kullanıcı adı ve şifre gerekli.' });
+        if (!username || !password) {
+            await saveSessionLog(req, 'login_failed', { username, reason: 'missing_credentials' });
+            return res.status(400).json({ error: 'Kullanıcı adı ve şifre gerekli.' });
+        }
 
         const user = await db.collection('users').findOne({ username });
         if (!user || !verifyPassword(password, user.passwordHash)) {
+            await saveSessionLog(req, 'login_failed', { username, reason: 'invalid_credentials' });
             return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı.' });
         }
 
         const cookie = createSessionCookie(user);
         const secure = IS_PRODUCTION ? '; Secure' : '';
         res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
+        await saveSessionLog(req, 'login_success', {
+            userId: String(user._id),
+            username: user.username,
+            role: user.role
+        });
         res.json({ user: { id: String(user._id), username: user.username, role: user.role } });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+    const user = getSessionUser(req);
+    if (user) {
+        await saveSessionLog(req, 'logout', {
+            userId: user.id,
+            username: user.username,
+            role: user.role
+        });
+    }
     res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
     res.json({ ok: true });
 });
@@ -670,6 +714,20 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
             projection: { passwordHash: 0 }
         }).sort({ username: 1 }).toArray();
         res.json(users);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/session-logs', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        if (!db) return res.json([]);
+        const logs = await db.collection('session_logs')
+            .find({})
+            .sort({ createdAt: -1 })
+            .limit(500)
+            .toArray();
+        res.json(logs);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
