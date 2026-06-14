@@ -407,34 +407,59 @@ async function saveSuccessfulLogin(result, owner) {
 // ------------------ TEK PENCEREDE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
 async function runAllTests(testItems, owner) {
     const resultsFile = getResultsFile(owner.id);
-    await fs.writeFile(resultsFile, '[]');
+    const results = testItems.map(item => ({
+        baseUrl: item.baseUrl,
+        username: item.username,
+        password: item.password,
+        success: null,
+        message: 'SIRADA',
+        timestamp: new Date().toISOString()
+    }));
+    await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
 
-    const browser = await puppeteer.launch({
-        headless: IS_PRODUCTION ? 'new' : false,
-        slowMo: IS_PRODUCTION ? 0 : 250,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
-        ]
-    });
-    const page = await browser.newPage();
-    const results = [];
     const total = testItems.length;
     sendLog(`🚀 BAŞLANGIÇ – ${total} test (tek pencere, yavaş mod 250ms)`, 'info', owner.id);
+    sendLog(IS_PRODUCTION ? '🌐 Render ortamında browser headless çalışır, pencere açılmaz.' : '🪟 Lokal ortamda browser penceresi açılıyor.', 'info', owner.id);
+    sendLog('🧭 Browser motoru başlatılıyor...', 'info', owner.id);
+
+    let browser = null;
+    let page = null;
+    try {
+        browser = await puppeteer.launch({
+            headless: IS_PRODUCTION ? 'new' : false,
+            slowMo: IS_PRODUCTION ? 0 : 250,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process'
+            ]
+        });
+        page = await browser.newPage();
+        sendLog('✅ Browser motoru hazır.', 'success', owner.id);
+    } catch (err) {
+        const message = `Browser başlatılamadı: ${err.message}`;
+        sendLog(`❌ ${message}`, 'error', owner.id);
+        for (const result of results) {
+            result.success = false;
+            result.message = message;
+            result.timestamp = new Date().toISOString();
+            await saveCheckResult(result, owner);
+        }
+        await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
+        return results;
+    }
 
     for (let i = 0; i < total; i++) {
         const { baseUrl, username, password } = testItems[i];
         sendLog(`📌 Test ${i+1}/${total}: ${username} @ ${baseUrl}`, 'info', owner.id);
 
-        const result = {
-            baseUrl,
-            username,
-            password,
-            success: false,
-            message: '',
-            timestamp: new Date().toISOString()
-        };
+        const result = results[i];
+        result.success = null;
+        result.message = 'ÇALIŞIYOR';
+        result.timestamp = new Date().toISOString();
+        await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
 
         try {
             const url = normalizeUrl(baseUrl);
@@ -492,7 +517,6 @@ async function runAllTests(testItems, owner) {
             sendLog(`⚠ HATA ${username}: ${err.message}`, 'error', owner.id);
         }
 
-        results.push(result);
         await saveCheckResult(result, owner);
         await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
         await new Promise(resolve => setTimeout(resolve, 3000)); // test arası 2sn → 3sn

@@ -299,16 +299,20 @@
         }
         tbody.innerHTML = '';
         data.forEach(r => {
-            const row = `<tr class="${r.success ? 'ok' : 'fail'}">
+            const pending = r.success === null || r.success === undefined;
+            const rowClass = pending ? '' : (r.success ? 'ok' : 'fail');
+            const statusText = pending ? (r.message || 'SIRADA') : (r.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ');
+            const row = `<tr class="${rowClass}">
                 <td>${escapeHtml(r.baseUrl)}</td>
                 <td>${escapeHtml(r.username)}</td>
                 <td>${escapeHtml(r.password)}</td>
-                <td>${r.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ'}</td>
+                <td>${escapeHtml(statusText)}</td>
             </tr>`;
             tbody.insertAdjacentHTML('beforeend', row);
         });
 
-        if (totalTests > 0 && data.length === totalTests && !window.popupShown) {
+        const completed = data.length === totalTests && data.every(item => item.success !== null && item.success !== undefined);
+        if (totalTests > 0 && completed && !window.popupShown) {
             window.popupShown = true;
             const okCount = data.filter(x => x.success).length;
             alert(`🏁 TEST TAMAMLANDI!\n✅ Başarılı: ${okCount}\n❌ Başarısız: ${data.length - okCount}\nRaporu "İNDİR" butonuyla alabilirsiniz.`);
