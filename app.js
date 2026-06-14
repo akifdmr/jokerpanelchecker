@@ -487,14 +487,15 @@ async function runAllTests(testItems, owner) {
     } catch (err) {
         const message = `Browser başlatılamadı: ${err.message}`;
         sendLog(`❌ ${message}`, 'error', owner.id);
+        const failedAt = new Date().toISOString();
         for (const result of results) {
             result.success = false;
             result.message = message;
-            result.timestamp = new Date().toISOString();
+            result.timestamp = failedAt;
             await saveCheckResult(result, owner);
-            await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
-            await delay(CHECK_PROGRESS_DELAY_MS);
         }
+        await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
+        sendLog(`🏁 BİTİŞ – Browser başlatılamadığı için ${total} test çalıştırılamadı.`, 'error', owner.id);
         return results;
     }
 
