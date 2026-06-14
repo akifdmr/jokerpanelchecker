@@ -200,6 +200,7 @@
     let refreshTimer = null;
     let totalTests = 0;
     let currentUser = null;
+    let currentRunId = null;
     let historyRows = [];
     let currentHistoryType = 'checks';
 
@@ -312,8 +313,12 @@
 
     async function refreshResults() {
         let data = [];
+        if (!currentRunId) {
+            tbody.innerHTML = '';
+            return;
+        }
         try {
-            const res = await apiFetch('/api/results');
+            const res = await apiFetch(`/api/results?runId=${encodeURIComponent(currentRunId)}`);
             if (!res.ok) {
                 const err = await readJson(res, 'Sonuçlar alınamadı.').catch(() => ({}));
                 throw new Error(err.error || `Sonuçlar alınamadı. HTTP ${res.status}`);
@@ -464,16 +469,19 @@
     async function clearAll() {
         tbody.innerHTML = '';
         logPanel.innerHTML = '<div>🧹 Temizlendi - Yeni teste hazır</div>';
-        const res = await apiFetch('/api/results', { method: 'DELETE' });
-        if (!res.ok) {
-            const err = await readJson(res, 'Temizleme cevabı okunamadı.').catch(() => ({}));
-            throw new Error(err.error || `Temizleme başarısız. HTTP ${res.status}`);
+        if (currentRunId) {
+            const res = await apiFetch(`/api/results?runId=${encodeURIComponent(currentRunId)}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await readJson(res, 'Temizleme cevabı okunamadı.').catch(() => ({}));
+                throw new Error(err.error || `Temizleme başarısız. HTTP ${res.status}`);
+            }
         }
         if (refreshTimer) {
             clearInterval(refreshTimer);
             refreshTimer = null;
         }
         totalTests = 0;
+        currentRunId = null;
         window.popupShown = false;
     }
 
@@ -498,6 +506,7 @@
                 return;
             }
             totalTests = json.total;
+            currentRunId = json.runId;
             window.popupShown = false;
             alert(`Test başladı! Toplam ${totalTests} deneme sırayla çalışacak. Yazılan karakterleri net göreceksiniz.`);
 
@@ -511,7 +520,11 @@
     }
 
     async function downloadResults() {
-        window.location.href = '/api/download';
+        if (!currentRunId) {
+            alert('İndirilecek aktif check sonucu yok.');
+            return;
+        }
+        window.location.href = `/api/download?runId=${encodeURIComponent(currentRunId)}`;
     }
 
     async function loadHistory(type) {

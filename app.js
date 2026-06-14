@@ -96,9 +96,14 @@ function requireAdmin(req, res, next) {
     return res.status(403).json({ error: 'Admin yetkisi gerekli.' });
 }
 
-function getResultsFile(userId) {
+function safeFileToken(value, fallback = 'anon') {
+    return String(value || fallback).replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+function getResultsFile(userId, runId = 'current') {
     const suffix = String(userId || 'anon').replace(/[^a-zA-Z0-9_-]/g, '');
-    return RESULTS_FILE.replace(/\.json$/i, `-${suffix}.json`);
+    const runSuffix = safeFileToken(runId, 'current');
+    return RESULTS_FILE.replace(/\.json$/i, `-${suffix}-${runSuffix}.json`);
 }
 
 function maskPassword(password) {
@@ -451,8 +456,8 @@ async function saveSuccessfulLogin(result, owner) {
 }
 
 // ------------------ İZOLE SESSION İLE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
-async function runAllTests(testItems, owner) {
-    const resultsFile = getResultsFile(owner.id);
+async function runAllTests(testItems, owner, runId) {
+    const resultsFile = getResultsFile(owner.id, runId);
     const results = testItems.map(item => ({
         baseUrl: item.baseUrl,
         username: item.username,
@@ -616,9 +621,9 @@ app.post('/api/start', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Geçerli test verisi yok. Format: url:user:pass' });
         }
 
-        await fs.writeFile(getResultsFile(req.user.id), '[]');
-        res.json({ message: 'Test başladı', total: testItems.length });
-        runAllTests(testItems, req.user).catch(err => {
+        const runId = crypto.randomUUID();
+        res.json({ message: 'Test başladı', total: testItems.length, runId });
+        runAllTests(testItems, req.user, runId).catch(err => {
             console.error('Test runner fatal error:', err);
             sendLog(`❌ Test çalıştırıcı durdu: ${err.message}`, 'error', req.user.id);
         });
@@ -630,7 +635,9 @@ app.post('/api/start', requireAuth, async (req, res) => {
 
 app.get('/api/results', requireAuth, async (req, res) => {
     try {
-        const data = await fs.readFile(getResultsFile(req.user.id), 'utf8');
+        const runId = req.query.runId;
+        if (!runId) return res.json([]);
+        const data = await fs.readFile(getResultsFile(req.user.id, runId), 'utf8');
         res.json(JSON.parse(data));
     } catch {
         res.json([]);
@@ -639,7 +646,9 @@ app.get('/api/results', requireAuth, async (req, res) => {
 
 app.get('/api/download', requireAuth, async (req, res) => {
     try {
-        const data = JSON.parse(await fs.readFile(getResultsFile(req.user.id), 'utf8'));
+        const runId = req.query.runId;
+        if (!runId) return res.status(400).send('Run ID yok');
+        const data = JSON.parse(await fs.readFile(getResultsFile(req.user.id, runId), 'utf8'));
         const success = data.filter(x => x.success);
         const fail = data.filter(x => !x.success);
         let output = '✅ BAŞARILI\n\n';
@@ -749,7 +758,10 @@ app.get('/api/admin/session-logs', requireAuth, requireAdmin, async (req, res) =
 
 app.delete('/api/results', requireAuth, async (req, res) => {
     try {
-        await fs.writeFile(getResultsFile(req.user.id), '[]');
+        const runId = req.query.runId;
+        if (runId) {
+            await fs.writeFile(getResultsFile(req.user.id, runId), '[]');
+        }
         res.json({ ok: true });
     } catch {
         res.status(500).json({ error: 'Silme hatası' });
