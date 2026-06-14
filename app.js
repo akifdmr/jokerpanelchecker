@@ -536,7 +536,10 @@ app.post('/api/start', requireAuth, async (req, res) => {
 
         await fs.writeFile(getResultsFile(req.user.id), '[]');
         res.json({ message: 'Test başladı', total: testItems.length });
-        runAllTests(testItems, req.user);
+        runAllTests(testItems, req.user).catch(err => {
+            console.error('Test runner fatal error:', err);
+            sendLog(`❌ Test çalıştırıcı durdu: ${err.message}`, 'error', req.user.id);
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: err.message });
