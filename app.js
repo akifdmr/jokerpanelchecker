@@ -450,7 +450,7 @@ async function saveSuccessfulLogin(result, owner) {
     }
 }
 
-// ------------------ TEK PENCEREDE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
+// ------------------ İZOLE SESSION İLE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
 async function runAllTests(testItems, owner) {
     const resultsFile = getResultsFile(owner.id);
     const results = testItems.map(item => ({
@@ -464,12 +464,11 @@ async function runAllTests(testItems, owner) {
     await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
 
     const total = testItems.length;
-    sendLog(`🚀 BAŞLANGIÇ – ${total} test (tek pencere, yavaş mod 250ms)`, 'info', owner.id);
+    sendLog(`🚀 BAŞLANGIÇ – ${total} test (her kullanıcı için ayrı izole session)`, 'info', owner.id);
     sendLog(IS_PRODUCTION ? '🌐 Render ortamında browser headless çalışır, pencere açılmaz.' : '🪟 Lokal ortamda browser penceresi açılıyor.', 'info', owner.id);
     sendLog('🧭 Browser motoru başlatılıyor...', 'info', owner.id);
 
     let browser = null;
-    let page = null;
     try {
         browser = await puppeteer.launch({
             headless: IS_PRODUCTION ? 'new' : false,
@@ -482,7 +481,6 @@ async function runAllTests(testItems, owner) {
                 '--single-process'
             ]
         });
-        page = await browser.newPage();
         sendLog('✅ Browser motoru hazır.', 'success', owner.id);
     } catch (err) {
         const message = `Browser başlatılamadı: ${err.message}`;
@@ -502,6 +500,7 @@ async function runAllTests(testItems, owner) {
     for (let i = 0; i < total; i++) {
         const { baseUrl, username, password } = testItems[i];
         sendLog(`📌 Test ${i+1}/${total}: ${username} @ ${baseUrl}`, 'info', owner.id);
+        sendLog(`🧪 Yeni izole session açılıyor: ${username}`, 'info', owner.id);
 
         const result = results[i];
         result.success = null;
@@ -510,7 +509,11 @@ async function runAllTests(testItems, owner) {
         await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
         await delay(CHECK_PROGRESS_DELAY_MS);
 
+        let context = null;
+        let page = null;
         try {
+            context = await browser.createBrowserContext();
+            page = await context.newPage();
             const url = normalizeUrl(baseUrl);
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
             await delay(CHECK_PROGRESS_DELAY_MS);
@@ -558,13 +561,18 @@ async function runAllTests(testItems, owner) {
                 await saveSuccessfulLogin(result, owner);
             }
 
-            const client = await page.target().createCDPSession();
-            await client.send('Network.clearBrowserCookies');
-            await client.send('Network.clearBrowserCache');
-
         } catch (err) {
+            result.success = false;
             result.message = err.message;
             sendLog(`⚠ HATA ${username}: ${err.message}`, 'error', owner.id);
+        } finally {
+            if (page) {
+                await page.close().catch(() => {});
+            }
+            if (context) {
+                await context.close().catch(() => {});
+            }
+            sendLog(`🧹 Session kapatıldı: ${username}`, 'info', owner.id);
         }
 
         await saveCheckResult(result, owner);
