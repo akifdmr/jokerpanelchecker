@@ -1,14 +1,19 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
+const os = require('os');
 const fs = require('fs').promises;
 const puppeteer = require('puppeteer');
 const { MongoClient } = require('mongodb');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const RESULTS_FILE = process.env.RESULTS_FILE || path.join(os.tmpdir(), 'panelcheckers-results.json');
 
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
 let clients = [];
 let db = null;
@@ -73,6 +78,15 @@ app.get('/api/log-stream', (req, res) => {
     clients.push(res);
     req.on('close', () => {
         clients = clients.filter(c => c !== res);
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.json({
+        ok: true,
+        service: 'panelcheckers',
+        db: db ? 'connected' : 'disabled',
+        uptime: process.uptime()
     });
 });
 
@@ -151,12 +165,16 @@ async function saveSuccessfulLogin(baseUrl, username, password) {
 
 // ------------------ TEK PENCEREDE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
 async function runAllTests(testItems) {
-    await fs.writeFile('results.json', '[]');
+    await fs.writeFile(RESULTS_FILE, '[]');
 
     const browser = await puppeteer.launch({
-        headless: false,
-        slowMo: 250,             // 🔥 150 → 250 (çok az yavaşlatıldı, yazmayı net gör)
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: IS_PRODUCTION ? 'new' : false,
+        slowMo: IS_PRODUCTION ? 0 : 250,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage'
+        ]
     });
     const page = await browser.newPage();
     const results = [];
@@ -233,7 +251,7 @@ async function runAllTests(testItems) {
         }
 
         results.push(result);
-        await fs.writeFile('results.json', JSON.stringify(results, null, 2));
+        await fs.writeFile(RESULTS_FILE, JSON.stringify(results, null, 2));
         await new Promise(resolve => setTimeout(resolve, 3000)); // test arası 2sn → 3sn
     }
 
@@ -292,7 +310,7 @@ app.post('/api/start', async (req, res) => {
             return res.status(400).json({ error: 'Geçerli test verisi yok.' });
         }
 
-        await fs.writeFile('results.json', '[]');
+        await fs.writeFile(RESULTS_FILE, '[]');
         res.json({ message: 'Test başladı', total: testItems.length });
         runAllTests(testItems);
     } catch (err) {
@@ -303,7 +321,7 @@ app.post('/api/start', async (req, res) => {
 
 app.get('/api/results', async (req, res) => {
     try {
-        const data = await fs.readFile('results.json', 'utf8');
+        const data = await fs.readFile(RESULTS_FILE, 'utf8');
         res.json(JSON.parse(data));
     } catch {
         res.json([]);
@@ -312,7 +330,7 @@ app.get('/api/results', async (req, res) => {
 
 app.get('/api/download', async (req, res) => {
     try {
-        const data = JSON.parse(await fs.readFile('results.json', 'utf8'));
+        const data = JSON.parse(await fs.readFile(RESULTS_FILE, 'utf8'));
         const success = data.filter(x => x.success);
         const fail = data.filter(x => !x.success);
         let output = '✅ BAŞARILI\n\n';
@@ -328,7 +346,7 @@ app.get('/api/download', async (req, res) => {
 
 app.delete('/api/results', async (req, res) => {
     try {
-        await fs.writeFile('results.json', '[]');
+        await fs.writeFile(RESULTS_FILE, '[]');
         res.json({ ok: true });
     } catch {
         res.status(500).json({ error: 'Silme hatası' });
@@ -338,5 +356,9 @@ app.delete('/api/results', async (req, res) => {
 // ------------------ SERVER BAŞLATMA ------------------
 (async () => {
     await connectMongo();
-    app.listen(PORT, () => console.log(`✅ Sunucu çalışıyor: http://localhost:${PORT}`));
+    const server = app.listen(PORT, HOST, () => console.log(`✅ Sunucu çalışıyor: http://${HOST}:${PORT}`));
+    server.on('error', (err) => {
+        console.error(`❌ Sunucu başlatılamadı (${HOST}:${PORT}):`, err.message);
+        process.exit(1);
+    });
 })();
