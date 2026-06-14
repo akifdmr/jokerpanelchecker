@@ -12,8 +12,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const CHECK_PROGRESS_DELAY_MS = Number(process.env.CHECK_PROGRESS_DELAY_MS || 1500);
-const CHECK_PAGE_DELAY_MS = Number(process.env.CHECK_PAGE_DELAY_MS || 2000);
+const CHECK_PROGRESS_DELAY_MS = Number(process.env.CHECK_PROGRESS_DELAY_MS || 1000);
+const CHECK_PAGE_DELAY_MS = Number(process.env.CHECK_PAGE_DELAY_MS || 1000);
 const RESULTS_FILE = process.env.RESULTS_FILE || path.join(os.tmpdir(), 'panelcheckers-results.json');
 const SESSION_COOKIE = 'panelcheckers_session';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'panelcheckers-dev-secret-change-me';
@@ -533,6 +533,7 @@ async function runAllTests(testItems, owner, runId) {
 
             await userInput.click({ clickCount: 3 });
             await userInput.type(username);
+            await delay(CHECK_PROGRESS_DELAY_MS);
             await passInput.type(password);
             await delay(CHECK_PROGRESS_DELAY_MS);
             await submitBtn.click();
