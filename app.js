@@ -677,6 +677,68 @@ function parseCredentialLine(line) {
     return { url, username, password };
 }
 
+function extractLabeledValue(line, labels) {
+    const normalized = String(line || '').trim();
+    for (const label of labels) {
+        const match = normalized.match(new RegExp(`^[^\\p{L}\\p{N}]*${label}\\s*:\\s*(.+)$`, 'iu'));
+        if (match) return match[1].trim();
+    }
+    return '';
+}
+
+function parseCredentialText(credsText) {
+    const lines = String(credsText || '').split(/\r?\n/);
+    const parsed = [];
+    let block = {};
+
+    const flushBlock = () => {
+        if (block.url || block.username || block.password) {
+            if (block.url && block.username) {
+                parsed.push({
+                    url: block.url,
+                    username: block.username,
+                    password: block.password || ''
+                });
+            }
+            block = {};
+        }
+    };
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('###')) {
+            if (!line) flushBlock();
+            continue;
+        }
+
+        const password = extractLabeledValue(line, ['şifre', 'sifre', 'password', 'parola']);
+        const username = extractLabeledValue(line, ['nick', 'kullanıcı', 'kullanici', 'username', 'user']);
+        const url = extractLabeledValue(line, ['bağlantı', 'baglanti', 'url', 'link']);
+
+        if (password) {
+            if (block.password && (block.url || block.username)) flushBlock();
+            block.password = password;
+            continue;
+        }
+        if (username) {
+            block.username = username;
+            continue;
+        }
+        if (url) {
+            block.url = url;
+            if (block.username) flushBlock();
+            continue;
+        }
+
+        flushBlock();
+        const singleLine = parseCredentialLine(line);
+        if (singleLine && singleLine.url && singleLine.username) parsed.push(singleLine);
+    }
+
+    flushBlock();
+    return parsed;
+}
+
 function buildStoredResult(result, owner) {
     return {
         ownerUserId: owner.id,
@@ -887,19 +949,7 @@ app.post('/api/start', requireAuth, async (req, res) => {
         let { credsText } = req.body;
         credsText = credsText || '';
 
-        const rawCredLines = credsText.split('\n')
-            .map(l => l.trim())
-            .filter(l => l && !l.startsWith('###'));
-
-        const parsedCreds = [];
-        for (const line of rawCredLines) {
-            const p = parseCredentialLine(line);
-            if (p && p.url && p.username) {
-                parsedCreds.push(p);
-            } else {
-                sendLog(`⚠ Geçersiz satır atlandı: ${line}`, 'error', req.user.id);
-            }
-        }
+        const parsedCreds = parseCredentialText(credsText);
 
         const testItems = parsedCreds.map(cred => ({
             baseUrl: cred.url,
