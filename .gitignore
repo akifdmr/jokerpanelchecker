@@ -12,4 +12,5 @@ results.json
 formatted_list.txt
 
 # Local browser/driver binaries
+.cache/
 chromedriver/

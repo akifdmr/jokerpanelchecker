@@ -27,5 +27,6 @@ Optional environment variables:
 - `MONGODB_PASSWORD`
 - `MONGODB_CERT_PATH`
 - `RESULTS_FILE`
+- `PUPPETEER_CACHE_DIR` (Render default: `/opt/render/project/src/.cache/puppeteer`)
 
-The included `render.yaml` sets production mode and Puppeteer's cache directory for Render.
+The included `render.yaml` sets production mode and Puppeteer's cache directory for Render. Chrome is installed during `npm ci` through the `postinstall` script.

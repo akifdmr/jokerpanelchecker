@@ -4,6 +4,9 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+
+process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || path.join(__dirname, '.cache', 'puppeteer');
+
 const puppeteer = require('puppeteer');
 const { MongoClient } = require('mongodb');
 const JSZip = require('jszip');

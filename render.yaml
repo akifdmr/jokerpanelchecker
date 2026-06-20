@@ -3,14 +3,14 @@ services:
     name: panelcheckers
     runtime: node
     plan: starter
-    buildCommand: npm ci && npx puppeteer browsers install chrome
+    buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PUPPETEER_CACHE_DIR
-        value: /opt/render/.cache/puppeteer
+        value: /opt/render/project/src/.cache/puppeteer
       - key: DATABASE_URL
         sync: false
       - key: MONGODB_USERNAME
