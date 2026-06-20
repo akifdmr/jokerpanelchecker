@@ -45,6 +45,13 @@
         .status-pill { display: inline-block; border-radius: 999px; padding: 4px 8px; font-weight: 700; font-size: 12px; }
         .status-ok { background: #bfe8ca; color: #175b2a; }
         .status-fail { background: #f5c2c7; color: #842029; }
+        .host-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #e5eaf1; padding: 8px 0; }
+        .host-row:last-child { border-bottom: 0; }
+        .host-tag { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }
+        .host-source { color: #667085; font-size: 12px; }
+        .proxy-status { margin-top: 12px; border: 1px solid #d9e1ec; border-radius: 12px; padding: 12px; background: #f8fafc; }
+        .proxy-status.ok { background: #eaf7ee; border-color: #9bd1aa; }
+        .proxy-status.fail { background: #fff0f1; border-color: #e4a4aa; }
         .history-table th, .history-table td { vertical-align: top; }
         .history-table td:nth-child(2), .history-table td:nth-child(4), .history-table td:nth-child(7) { max-width: 240px; overflow-wrap: anywhere; }
         .note { font-size: 12px; color: #666; margin-top: 8px; }
@@ -77,22 +84,55 @@
         <button class="danger" onclick="logout()">ÇIKIŞ</button>
     </div>
 
+    <div class="card hidden" id="allowedHostsCard">
+        <h3>Yetkili Domainler</h3>
+        <div class="muted" id="allowedHostsHelp"></div>
+        <div class="history-toolbar">
+            <div>
+                <label><b>Host ekle</b></label>
+                <input id="allowedHostInput" placeholder="login.sirket.com">
+            </div>
+            <div>
+                <button onclick="addAllowedHost()">EKLE</button>
+            </div>
+            <div>
+                <button class="secondary" onclick="loadAllowedHosts()">YENİLE</button>
+            </div>
+        </div>
+        <div id="allowedHostsList"></div>
+    </div>
+
     <div class="card">
         <h2>🔐 Joker Panel Checker </h2>
+        <div>
+            <label><b>SOCKS5 Proxy</b></label>
+            <div class="flex" style="align-items: end; margin-top: 8px;">
+                <div class="col">
+                    <input id="proxyInput" type="password" autocomplete="off" placeholder="socks5://kullanici:sifre@host:port">
+                </div>
+                <div>
+                    <button onclick="addProxy()">EKLE</button>
+                    <button class="danger" onclick="removeProxy()">KALDIR</button>
+                </div>
+            </div>
+            <div id="proxyStatus" class="proxy-status">Proxy eklenmedi.</div>
+        </div>
+        <div style="height: 18px;"></div>
         <div class="flex">
             <div class="col">
                 <label><b>🔑 URL:Kullanıcı:Şifre listesi</b><br>
-                <small>Format: https://domain.com/login:user:pass</small></label>
-                <textarea id="creds" rows="10" placeholder="https://fidelityrewards.com:barraganjudie@aetna.com:zdjoi973J0ERz&#10;https://login.fidelityrewards.com/onlineCard/login.do:95009:s4978600tf&#10;https://example.com/login:sugarplum81:Cos10pews_2010"></textarea>
+                <small>Format: http://127.0.0.1:3000/demo-login:demo:demo123</small></label>
+                <textarea id="creds" rows="10" placeholder="http://127.0.0.1:3000/demo-login:demo:demo123&#10;http://127.0.0.1:3000/demo-login:demo:wrongpass"></textarea>
             </div>
         </div>
         <div style="margin-top: 15px;">
+            <button onclick="loadDemoData()">ÖRNEK DOLDUR</button>
             <button onclick="startTest()">▶ BAŞLAT</button>
             <button class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
             <button onclick="clearAll()">🧹 TEMİZLE</button>
             <button onclick="downloadResults()">📥 İNDİR</button>
         </div>
-        <div class="note">💡 Her kullanıcı ayrı izole browser session içinde denenir; sayfa açma, veri girme ve post adımları 1 saniye aralıkla ilerler.</div>
+        <div class="note">💡 Varsayılan ayarda yalnızca local/dummy hedefler çalışır. Dış QA hostları için sunucuda CHECK_ALLOWED_HOSTS tanımlanmalıdır.</div>
     </div>
 
     <div class="split">
@@ -100,7 +140,7 @@
             <h3>📊 Sonuçlar (Şifreler Tam Görünür)</h3>
             <div class="table-wrapper">
                 <table id="resultTable">
-                    <thead><tr><th>URL</th><th>Kullanıcı</th><th>Şifre</th><th>Durum</th></tr></thead>
+                    <thead><tr><th>URL</th><th>Kullanıcı</th><th>Şifre</th><th>Durum</th><th>Mesaj</th></tr></thead>
                     <tbody id="tableBody"></tbody>
                 </table>
             </div>
@@ -196,6 +236,7 @@
     const logPanel = document.getElementById('logPanel');
     const historyBody = document.getElementById('historyBody');
     const sessionLogsBody = document.getElementById('sessionLogsBody');
+    const allowedHostsList = document.getElementById('allowedHostsList');
     let eventSource = null;
     let refreshTimer = null;
     let totalTests = 0;
@@ -235,6 +276,7 @@
         document.getElementById('loginCard').classList.remove('hidden');
         document.getElementById('appRoot').classList.add('hidden');
         document.getElementById('sessionLogsCard').classList.add('hidden');
+        document.getElementById('allowedHostsCard').classList.add('hidden');
     }
 
     function showApp(user) {
@@ -247,6 +289,7 @@
             ? 'Admin görünümü: tüm kullanıcıların yaptığı check kayıtları listelenir.'
             : 'Kullanıcı görünümü: sadece kendi yaptığınız check kayıtları listelenir.';
         document.getElementById('sessionLogsCard').classList.toggle('hidden', user.role !== 'admin');
+        document.getElementById('allowedHostsCard').classList.toggle('hidden', user.role !== 'admin');
     }
 
     async function checkSession() {
@@ -261,7 +304,11 @@
         await clearAll();
         await refreshResults();
         await loadHistory('checks');
-        if (data.user.role === 'admin') await loadSessionLogs();
+        await loadProxy();
+        if (data.user.role === 'admin') {
+            await loadSessionLogs();
+            await loadAllowedHosts();
+        }
     }
 
     async function login() {
@@ -285,7 +332,11 @@
         await clearAll();
         await refreshResults();
         await loadHistory('checks');
-        if (data.user.role === 'admin') await loadSessionLogs();
+        await loadProxy();
+        if (data.user.role === 'admin') {
+            await loadSessionLogs();
+            await loadAllowedHosts();
+        }
     }
 
     async function logout() {
@@ -334,26 +385,44 @@
         }
         tbody.innerHTML = '';
         data.forEach(r => {
-            const pending = r.success === null || r.success === undefined;
-            const rowClass = pending ? '' : (r.success ? 'ok' : 'fail');
-            const statusText = pending ? (r.message || 'SIRADA') : (r.success ? '✅ BAŞARILI' : '❌ BAŞARISIZ');
+            const status = r.status || (r.success === true ? 'success' : (r.success === false ? 'fail' : 'queued'));
+            const pending = status === 'queued' || status === 'running';
+            const rowClass = pending ? '' : (status === 'success' ? 'ok' : 'fail');
+            const statusText = statusLabel(status, r.message);
             const row = `<tr class="${rowClass}">
                 <td>${escapeHtml(r.baseUrl)}</td>
                 <td>${escapeHtml(r.username)}</td>
                 <td>${escapeHtml(r.password)}</td>
                 <td>${escapeHtml(statusText)}</td>
+                <td>${escapeHtml(r.message || '')}</td>
             </tr>`;
             tbody.insertAdjacentHTML('beforeend', row);
         });
 
-        const completed = data.length === totalTests && data.every(item => item.success !== null && item.success !== undefined);
+        const completed = data.length === totalTests && data.every(item => {
+            const status = item.status || (item.success === true ? 'success' : (item.success === false ? 'fail' : 'queued'));
+            return status !== 'queued' && status !== 'running';
+        });
         if (totalTests > 0 && completed && !window.popupShown) {
             window.popupShown = true;
-            const okCount = data.filter(x => x.success).length;
-            alert(`🏁 TEST TAMAMLANDI!\n✅ Başarılı: ${okCount}\n❌ Başarısız: ${data.length - okCount}\nRaporu "İNDİR" butonuyla alabilirsiniz.`);
+            const okCount = data.filter(x => x.status === 'success' || x.success === true).length;
+            const failCount = data.filter(x => x.status === 'fail' || x.success === false).length;
+            const mfaCount = data.filter(x => x.status === 'mfa_required').length;
+            const errorCount = data.length - okCount - failCount - mfaCount;
+            alert(`🏁 TEST TAMAMLANDI!\n✅ Başarılı: ${okCount}\n❌ Başarısız: ${failCount}\n🛡 2FA gerekli: ${mfaCount}\n⚠ Çalıştırılamadı: ${errorCount}\nRaporu "İNDİR" butonuyla alabilirsiniz.`);
             if (refreshTimer) clearInterval(refreshTimer);
             refreshTimer = null;
         }
+    }
+
+    function statusLabel(status, message) {
+        if (status === 'success') return '✅ BAŞARILI';
+        if (status === 'fail') return '❌ BAŞARISIZ';
+        if (status === 'mfa_required') return '🛡 2FA GEREKLİ';
+        if (status === 'error') return '⚠ ÇALIŞTIRILAMADI';
+        if (status === 'blocked') return '⛔ ENGELLENDİ';
+        if (status === 'running') return '⏳ ÇALIŞIYOR';
+        return message || 'SIRADA';
     }
 
     function escapeHtml(str) {
@@ -483,6 +552,141 @@
         totalTests = 0;
         currentRunId = null;
         window.popupShown = false;
+    }
+
+    function loadDemoData() {
+        const origin = window.location.origin;
+        document.getElementById('creds').value = [
+            `${origin}/demo-login:demo:demo123`,
+            `${origin}/demo-login:demo:wrongpass`
+        ].join('\n');
+    }
+
+    function renderProxyStatus(proxy, error = '') {
+        const status = document.getElementById('proxyStatus');
+        if (error) {
+            status.className = 'proxy-status fail';
+            status.textContent = error;
+            return;
+        }
+        if (!proxy || !proxy.configured) {
+            status.className = 'proxy-status';
+            status.textContent = 'Proxy eklenmedi.';
+            return;
+        }
+        const geo = proxy.geo || {};
+        const location = [geo.city, geo.region, geo.country].filter(Boolean).join(', ');
+        const coordinates = geo.latitude !== null && geo.latitude !== undefined
+            ? `${geo.latitude}, ${geo.longitude}`
+            : '-';
+        status.className = 'proxy-status ok';
+        status.textContent = `Aktif: ${proxy.label} | Çıkış IP: ${geo.ip || '-'} | Konum: ${location || '-'} | Koordinat: ${coordinates} | Saat dilimi: ${geo.timezone || '-'}`;
+    }
+
+    async function loadProxy() {
+        if (!currentUser) return;
+        try {
+            const res = await apiFetch('/api/proxy');
+            const data = await readJson(res, 'Proxy bilgisi okunamadı.');
+            renderProxyStatus(data);
+        } catch (err) {
+            renderProxyStatus(null, err.message);
+        }
+    }
+
+    async function addProxy() {
+        const input = document.getElementById('proxyInput');
+        const connectionString = input.value.trim();
+        if (!connectionString) {
+            renderProxyStatus(null, 'Proxy eklenemedi: connection string gerekli.');
+            return;
+        }
+        const status = document.getElementById('proxyStatus');
+        status.className = 'proxy-status';
+        status.textContent = 'Proxy bağlantısı ve konumu doğrulanıyor...';
+        try {
+            const res = await apiFetch('/api/proxy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connectionString })
+            });
+            const data = await readJson(res, 'Proxy doğrulama cevabı okunamadı.');
+            if (!res.ok) {
+                renderProxyStatus(null, data.error || 'Proxy eklenemedi.');
+                return;
+            }
+            input.value = '';
+            renderProxyStatus(data.proxy);
+        } catch (err) {
+            renderProxyStatus(null, `Proxy eklenemedi: ${err.message}`);
+        }
+    }
+
+    async function removeProxy() {
+        try {
+            const res = await apiFetch('/api/proxy', { method: 'DELETE' });
+            if (!res.ok) throw new Error('Proxy kaldırılamadı.');
+            document.getElementById('proxyInput').value = '';
+            renderProxyStatus(null);
+        } catch (err) {
+            renderProxyStatus(null, err.message);
+        }
+    }
+
+    async function loadAllowedHosts() {
+        if (!currentUser || currentUser.role !== 'admin') return;
+        const res = await apiFetch('/api/admin/allowed-hosts');
+        const data = await readJson(res, 'Yetkili domainler okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Yetkili domainler okunamadı.');
+            return;
+        }
+        document.getElementById('allowedHostsHelp').textContent = data.rootDomains.length
+            ? `Panelden yalnızca şu kök domainler eklenebilir: ${data.rootDomains.join(', ')}`
+            : 'Panelden dış domain eklemek için CHECK_ALLOWED_ROOT_DOMAINS env değerini tanımlayın.';
+        allowedHostsList.innerHTML = '';
+        data.hosts.forEach(host => {
+            const fromEnv = data.envHosts.includes(host);
+            const row = document.createElement('div');
+            row.className = 'host-row';
+            row.innerHTML = `<div><div class="host-tag">${escapeHtml(host)}</div><div class="host-source">${fromEnv ? 'ENV' : data.persistence.toUpperCase()}</div></div>`;
+            if (!fromEnv) {
+                const button = document.createElement('button');
+                button.className = 'danger';
+                button.textContent = 'SİL';
+                button.addEventListener('click', () => deleteAllowedHost(host));
+                row.appendChild(button);
+            }
+            allowedHostsList.appendChild(row);
+        });
+    }
+
+    async function addAllowedHost() {
+        const input = document.getElementById('allowedHostInput');
+        const host = input.value.trim();
+        if (!host) return;
+        const res = await apiFetch('/api/admin/allowed-hosts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ host })
+        });
+        const data = await readJson(res, 'Host ekleme cevabı okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Host eklenemedi.');
+            return;
+        }
+        input.value = '';
+        await loadAllowedHosts();
+    }
+
+    async function deleteAllowedHost(host) {
+        const res = await apiFetch(`/api/admin/allowed-hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
+        const data = await readJson(res, 'Host silme cevabı okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Host silinemedi.');
+            return;
+        }
+        await loadAllowedHosts();
     }
 
     async function startTest() {
@@ -640,6 +844,12 @@
     }
 
     window.onload = async () => {
+        document.getElementById('proxyInput').addEventListener('keydown', event => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                addProxy();
+            }
+        });
         await checkSession();
     };
 </script>

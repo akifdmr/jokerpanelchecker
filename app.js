@@ -4,12 +4,16 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const https = require('https');
+const net = require('net');
 
 process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || path.join(__dirname, '.cache', 'puppeteer');
 
 const puppeteer = require('puppeteer');
 const { MongoClient } = require('mongodb');
 const JSZip = require('jszip');
+const ProxyChain = require('proxy-chain');
+const { SocksProxyAgent } = require('socks-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,9 +21,23 @@ const HOST = process.env.HOST || '0.0.0.0';
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const CHECK_PROGRESS_DELAY_MS = Number(process.env.CHECK_PROGRESS_DELAY_MS || 1000);
 const CHECK_PAGE_DELAY_MS = Number(process.env.CHECK_PAGE_DELAY_MS || 1000);
+const CHECK_ATTEMPT_DELAY_MS = Number(process.env.CHECK_ATTEMPT_DELAY_MS || 2000);
+const PROXY_CHECK_TIMEOUT_MS = Number(process.env.PROXY_CHECK_TIMEOUT_MS || 12000);
 const RESULTS_FILE = process.env.RESULTS_FILE || path.join(os.tmpdir(), 'panelcheckers-results.json');
+const ENV_ALLOWED_HOSTS = String(process.env.CHECK_ALLOWED_HOSTS || 'localhost,127.0.0.1')
+    .split(',')
+    .map(host => normalizeHost(host))
+    .filter(Boolean);
+const CHECK_ALLOWED_ROOT_DOMAINS = String(process.env.CHECK_ALLOWED_ROOT_DOMAINS || '')
+    .split(',')
+    .map(host => normalizeHost(host))
+    .filter(Boolean);
 const SESSION_COOKIE = 'panelcheckers_session';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'panelcheckers-dev-secret-change-me';
+const BROWSER_HEADLESS = process.env.BROWSER_HEADLESS
+    ? !['0', 'false', 'no'].includes(String(process.env.BROWSER_HEADLESS).toLowerCase())
+    : IS_PRODUCTION ? 'new' : false;
+const BROWSER_USER_DATA_ROOT = process.env.BROWSER_USER_DATA_ROOT || path.join(os.tmpdir(), 'panelcheckers-browser-profiles');
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -32,6 +50,28 @@ let mongoStatus = {
     connected: false,
     error: null
 };
+let dynamicAllowedHosts = new Set();
+const userProxyConfigs = new Map();
+
+function normalizeHost(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    try {
+        const parsed = new URL(raw.includes('://') ? raw : `https://${raw}`);
+        return parsed.hostname.replace(/^www\./, '');
+    } catch {
+        return raw
+            .replace(/^https?:\/\//, '')
+            .split('/')[0]
+            .split(':')[0]
+            .replace(/^www\./, '')
+            .replace(/[^a-z0-9.-]/g, '');
+    }
+}
+
+function getAllowedHosts() {
+    return [...new Set([...ENV_ALLOWED_HOSTS, ...dynamicAllowedHosts])].sort();
+}
 
 function normalizeUsername(username) {
     return String(username || '').trim().toLowerCase();
@@ -124,8 +164,183 @@ function getDomainFromUrl(value) {
     }
 }
 
+function isAllowedCheckUrl(value) {
+    try {
+        const url = new URL(normalizeUrl(value));
+        return getAllowedHosts().includes(normalizeHost(url.hostname));
+    } catch {
+        return false;
+    }
+}
+
+function isLocalAllowedHost(host) {
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function isHostUnderRoot(host, root) {
+    return host === root || host.endsWith(`.${root}`);
+}
+
+function validateAllowedHostCandidate(input) {
+    const host = normalizeHost(input);
+    if (!host) return { ok: false, error: 'Host boş olamaz.' };
+    if (!/^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$/.test(host)) {
+        return { ok: false, error: 'Geçerli bir host girin. Örnek: login.sirket.com' };
+    }
+    if (isLocalAllowedHost(host)) return { ok: true, host };
+    if (CHECK_ALLOWED_ROOT_DOMAINS.some(root => isHostUnderRoot(host, root))) return { ok: true, host };
+    return {
+        ok: false,
+        error: CHECK_ALLOWED_ROOT_DOMAINS.length
+            ? `Host izinli kök domain altında değil. İzinli kökler: ${CHECK_ALLOWED_ROOT_DOMAINS.join(', ')}`
+            : 'Şirket domaini eklemek için önce CHECK_ALLOWED_ROOT_DOMAINS env değerini tanımlayın.'
+    };
+}
+
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isPrivateIp(host) {
+    if (!net.isIP(host)) return false;
+    if (host === '::1') return true;
+    if (host.includes(':')) {
+        const normalized = host.toLowerCase();
+        return normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe8')
+            || normalized.startsWith('fe9') || normalized.startsWith('fea') || normalized.startsWith('feb');
+    }
+    const parts = host.split('.').map(Number);
+    return parts[0] === 10
+        || parts[0] === 127
+        || (parts[0] === 169 && parts[1] === 254)
+        || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
+        || (parts[0] === 192 && parts[1] === 168);
+}
+
+function parseSocksProxy(input) {
+    const raw = String(input || '').trim();
+    if (!raw) throw new Error('SOCKS5 proxy connection string gerekli.');
+
+    let parsed;
+    try {
+        parsed = new URL(raw.includes('://') ? raw : `socks5://${raw}`);
+    } catch {
+        throw new Error('Geçersiz proxy connection string.');
+    }
+
+    if (!['socks5:', 'socks5h:'].includes(parsed.protocol)) {
+        throw new Error('Yalnızca socks5:// veya socks5h:// proxy desteklenir.');
+    }
+    if (!parsed.hostname || !parsed.port) {
+        throw new Error('Proxy host ve port içermelidir.');
+    }
+    if (['localhost', 'localhost.localdomain'].includes(parsed.hostname.toLowerCase()) || isPrivateIp(parsed.hostname)) {
+        throw new Error('Yerel veya özel ağ proxy adresleri kabul edilmez.');
+    }
+
+    return {
+        url: parsed.toString(),
+        protocol: parsed.protocol.replace(':', ''),
+        host: parsed.hostname,
+        port: Number(parsed.port),
+        username: decodeURIComponent(parsed.username || ''),
+        hasPassword: Boolean(parsed.password)
+    };
+}
+
+function publicProxyInfo(config, geo = null) {
+    return {
+        configured: true,
+        protocol: config.protocol,
+        host: config.host,
+        port: config.port,
+        username: config.username || '',
+        hasPassword: config.hasPassword,
+        label: `${config.protocol}://${config.username ? `${config.username}@` : ''}${config.host}:${config.port}`,
+        geo
+    };
+}
+
+async function lookupProxyGeo(proxyUrl) {
+    const agent = new SocksProxyAgent(proxyUrl);
+    return new Promise((resolve, reject) => {
+        const request = https.get('https://ipwho.is/', {
+            agent,
+            timeout: PROXY_CHECK_TIMEOUT_MS,
+            headers: {
+                Accept: 'application/json',
+                'User-Agent': 'PanelCheckers-ProxyVerifier/1.0'
+            }
+        }, response => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', chunk => {
+                body += chunk;
+                if (body.length > 128 * 1024) request.destroy(new Error('Proxy doğrulama cevabı çok büyük.'));
+            });
+            response.on('end', () => {
+                if (response.statusCode < 200 || response.statusCode >= 300) {
+                    reject(new Error(`Konum servisi HTTP ${response.statusCode} döndürdü.`));
+                    return;
+                }
+                try {
+                    const data = JSON.parse(body);
+                    if (data.success === false || !data.ip) {
+                        reject(new Error(data.message || 'Proxy çıkış IP bilgisi alınamadı.'));
+                        return;
+                    }
+                    resolve({
+                        ip: data.ip,
+                        country: data.country || '',
+                        countryCode: data.country_code || '',
+                        region: data.region || '',
+                        city: data.city || '',
+                        postal: data.postal || '',
+                        latitude: data.latitude ?? null,
+                        longitude: data.longitude ?? null,
+                        timezone: data.timezone && data.timezone.id ? data.timezone.id : ''
+                    });
+                } catch {
+                    reject(new Error('Proxy konum servisi geçersiz cevap döndürdü.'));
+                }
+            });
+        });
+        request.on('timeout', () => request.destroy(new Error('Proxy bağlantısı zaman aşımına uğradı.')));
+        request.on('error', reject);
+    });
+}
+
+function getBrowserLaunchOptions(runId = 'manual', browserProxyUrl = '') {
+    const userDataDir = path.join(BROWSER_USER_DATA_ROOT, safeFileToken(runId, 'manual'));
+    const args = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-crash-reporter',
+        '--disable-crashpad'
+    ];
+    if (browserProxyUrl) args.push(`--proxy-server=${browserProxyUrl}`);
+    return {
+        headless: BROWSER_HEADLESS,
+        slowMo: IS_PRODUCTION || BROWSER_HEADLESS ? 0 : 250,
+        userDataDir,
+        args
+    };
+}
+
+async function runBrowserSmokeTest(browser) {
+    const page = await browser.newPage();
+    try {
+        await page.goto('data:text/html,<form><input name="username"><input type="password"><button type="submit">Login</button></form>', {
+            waitUntil: 'domcontentloaded',
+            timeout: 5000
+        });
+        const hasForm = await page.$('input[name="username"]') && await page.$('input[type="password"]');
+        if (!hasForm) throw new Error('Smoke test login form not found');
+    } finally {
+        await page.close().catch(() => {});
+    }
 }
 
 async function initializeAuthCollections() {
@@ -136,6 +351,9 @@ async function initializeAuthCollections() {
     await db.collection('successful_logins').createIndex({ ownerUserId: 1, createdAt: -1 });
     await db.collection('session_logs').createIndex({ createdAt: -1 });
     await db.collection('session_logs').createIndex({ username: 1, createdAt: -1 });
+    await db.collection('allowed_hosts').createIndex({ host: 1 }, { unique: true });
+    const storedHosts = await db.collection('allowed_hosts').find({}, { projection: { host: 1 } }).toArray();
+    dynamicAllowedHosts = new Set(storedHosts.map(item => normalizeHost(item.host)).filter(Boolean));
 
     const seeds = [];
     if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
@@ -300,6 +518,15 @@ app.get('/health', (req, res) => {
         service: 'panelcheckers',
         db: db ? 'connected' : 'disabled',
         auth: db ? 'enabled' : 'disabled',
+        checker: {
+            allowedHosts: getAllowedHosts(),
+            envAllowedHosts: ENV_ALLOWED_HOSTS,
+            dynamicAllowedHosts: [...dynamicAllowedHosts].sort(),
+            allowedRootDomains: CHECK_ALLOWED_ROOT_DOMAINS,
+            progressDelayMs: CHECK_PROGRESS_DELAY_MS,
+            pageDelayMs: CHECK_PAGE_DELAY_MS,
+            attemptDelayMs: CHECK_ATTEMPT_DELAY_MS
+        },
         mongo: {
             configured: mongoStatus.configured,
             attempted: mongoStatus.attempted,
@@ -314,6 +541,51 @@ app.get('/health', (req, res) => {
         },
         uptime: process.uptime()
     });
+});
+
+app.get('/demo-login', (req, res) => {
+    res.type('html').send(`<!doctype html>
+<html>
+<head>
+  <title>Demo Login</title>
+  <style>
+    body { font-family: system-ui; background: #f3f5f8; margin: 0; display: grid; place-items: center; min-height: 100vh; }
+    main { width: min(420px, calc(100vw - 32px)); background: white; border: 1px solid #d9e1ec; border-radius: 8px; padding: 24px; }
+    label { display: block; font-weight: 700; margin-top: 12px; }
+    input, button { width: 100%; margin-top: 8px; padding: 12px; font: inherit; }
+    button { background: #1e466e; color: white; border: 0; border-radius: 6px; cursor: pointer; }
+    #message { margin-top: 14px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Demo Login</h1>
+    <form id="loginForm">
+      <label>Username<input name="username" id="username" autocomplete="username"></label>
+      <label>Password<input name="password" id="password" type="password" autocomplete="current-password"></label>
+      <button type="submit">Login</button>
+      <div id="message"></div>
+    </form>
+  </main>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const message = document.getElementById('message');
+      if (username === 'demo' && password === 'demo123') {
+        history.pushState({}, '', '/demo-dashboard');
+        document.body.innerHTML = '<main><h1>Dashboard</h1><p>Welcome demo account without MFA</p></main>';
+      } else if (username === 'mfa' && password === 'mfa123') {
+        history.pushState({}, '', '/demo-mfa');
+        document.body.innerHTML = '<main><h1>MFA_REQUIRED</h1><p>Password accepted. Two-factor verification required before account access.</p></main>';
+      } else {
+        message.textContent = 'Invalid username or password';
+      }
+    });
+  </script>
+</body>
+</html>`);
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -382,25 +654,12 @@ function parseCredentialLine(line) {
     let password = null;
 
     if (line.includes('://')) {
-        // URL'yi yakala (host'a kadar, port vs. dahil değil)
-        const urlMatch = line.match(/^(https?:\/\/[^:]+)/);
-        if (urlMatch) {
-            url = urlMatch[1];
-            // URL'den sonraki kısmı al ve başındaki TÜM ':' karakterlerini temizle
-            let rest = line.substring(url.length).replace(/^:+/, '');
-            const colonIndex = rest.indexOf(':');
-            if (colonIndex !== -1) {
-                username = rest.substring(0, colonIndex);
-                password = rest.substring(colonIndex + 1);
-            } else {
-                // Eğer hiç ':' yoksa, rest'in tamamı username, password boş
-                username = rest;
-                password = '';
-            }
-        } else {
-            username = line;
-            password = '';
-        }
+        const lastColon = line.lastIndexOf(':');
+        const secondLastColon = lastColon > -1 ? line.lastIndexOf(':', lastColon - 1) : -1;
+        if (secondLastColon === -1) return null;
+        url = line.substring(0, secondLastColon);
+        username = line.substring(secondLastColon + 1, lastColon);
+        password = line.substring(lastColon + 1);
     } else {
         const colonIndex = line.indexOf(':');
         if (colonIndex !== -1) {
@@ -428,7 +687,8 @@ function buildStoredResult(result, owner) {
         username: result.username,
         passwordMasked: maskPassword(result.password),
         passwordLength: String(result.password || '').length,
-        success: Boolean(result.success),
+        status: result.status || (result.success ? 'success' : 'fail'),
+        success: result.success === true,
         message: result.message || '',
         checkedAt: result.timestamp ? new Date(result.timestamp) : new Date(),
         createdAt: new Date()
@@ -459,12 +719,13 @@ async function saveSuccessfulLogin(result, owner) {
 }
 
 // ------------------ İZOLE SESSION İLE TEST (DAHA YAVAŞ, GÖRÜNÜR) ------------------
-async function runAllTests(testItems, owner, runId) {
+async function runAllTests(testItems, owner, runId, proxyConfig = null) {
     const resultsFile = getResultsFile(owner.id, runId);
     const results = testItems.map(item => ({
         baseUrl: item.baseUrl,
         username: item.username,
         password: item.password,
+        status: 'queued',
         success: null,
         message: 'SIRADA',
         timestamp: new Date().toISOString()
@@ -477,31 +738,33 @@ async function runAllTests(testItems, owner, runId) {
     sendLog('🧭 Browser motoru başlatılıyor...', 'info', owner.id);
 
     let browser = null;
+    let browserProxyUrl = '';
     try {
-        browser = await puppeteer.launch({
-            headless: IS_PRODUCTION ? 'new' : false,
-            slowMo: IS_PRODUCTION ? 0 : 250,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process'
-            ]
-        });
+        if (proxyConfig) {
+            browserProxyUrl = await ProxyChain.anonymizeProxy(proxyConfig.url);
+            sendLog(`🌍 SOCKS5 proxy aktif: ${proxyConfig.geo.ip} / ${proxyConfig.geo.country} ${proxyConfig.geo.city}`.trim(), 'success', owner.id);
+        }
+        const launchOptions = getBrowserLaunchOptions(runId, browserProxyUrl);
+        sendLog(`🧩 Browser ayarı: headless=${String(launchOptions.headless)}, profile=${launchOptions.userDataDir}`, 'info', owner.id);
+        browser = await puppeteer.launch(launchOptions);
         sendLog('✅ Browser motoru hazır.', 'success', owner.id);
+        await runBrowserSmokeTest(browser);
+        sendLog('✅ Browser smoke test geçti, gerçek sıraya geçiliyor.', 'success', owner.id);
     } catch (err) {
-        const message = `Browser başlatılamadı: ${err.message}`;
+        const message = `BROWSER_START_FAILED: ${err.message}`;
         sendLog(`❌ ${message}`, 'error', owner.id);
         const failedAt = new Date().toISOString();
         for (const result of results) {
-            result.success = false;
+            result.status = 'error';
+            result.success = null;
             result.message = message;
             result.timestamp = failedAt;
             await saveCheckResult(result, owner);
         }
         await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
         sendLog(`🏁 BİTİŞ – Browser başlatılamadığı için ${total} test çalıştırılamadı.`, 'error', owner.id);
+        if (browser) await browser.close().catch(() => {});
+        if (browserProxyUrl) await ProxyChain.closeAnonymizedProxy(browserProxyUrl, true).catch(() => {});
         return results;
     }
 
@@ -511,6 +774,7 @@ async function runAllTests(testItems, owner, runId) {
         sendLog(`🧪 Yeni izole session açılıyor: ${username}`, 'info', owner.id);
 
         const result = results[i];
+        result.status = 'running';
         result.success = null;
         result.message = 'ÇALIŞIYOR';
         result.timestamp = new Date().toISOString();
@@ -523,6 +787,9 @@ async function runAllTests(testItems, owner, runId) {
             context = await browser.createBrowserContext();
             page = await context.newPage();
             const url = normalizeUrl(baseUrl);
+            if (!isAllowedCheckUrl(url)) {
+                throw new Error(`CHECK_BLOCKED_HOST: ${new URL(url).hostname} izinli host listesinde yok`);
+            }
             await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
             await delay(CHECK_PROGRESS_DELAY_MS);
 
@@ -543,19 +810,29 @@ async function runAllTests(testItems, owner, runId) {
 
             await delay(CHECK_PAGE_DELAY_MS);
             const finalUrl = page.url();
-            const html = await page.content().catch(() => '');
+            const visibleText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
 
             let success = false;
-            const lowerHtml = html.toLowerCase();
-            if (lowerHtml.includes('invalid') || lowerHtml.includes('wrong') || 
-                lowerHtml.includes('error') || lowerHtml.includes('failed') || 
-                lowerHtml.includes('incorrect')) {
+            const lowerText = visibleText.toLowerCase();
+            if (lowerText.includes('mfa_required') || lowerText.includes('two-factor') || lowerText.includes('2fa')) {
+                result.success = null;
+                result.status = 'mfa_required';
+                result.message = 'MFA REQUIRED - PASSWORD CORRECT';
+                sendLog(`🛡 2FA GEREKLİ ${username}`, 'info', owner.id);
+                await saveCheckResult(result, owner);
+                await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
+                continue;
+            }
+
+            if (lowerText.includes('invalid') || lowerText.includes('wrong') ||
+                lowerText.includes('error') || lowerText.includes('failed') ||
+                lowerText.includes('incorrect')) {
                 success = false;
             }
             else if (finalUrl !== url && !finalUrl.includes('login') && !finalUrl.includes('signin')) {
                 success = true;
             }
-            else if (lowerHtml.includes('dashboard') || lowerHtml.includes('welcome') || lowerHtml.includes('account')) {
+            else if (lowerText.includes('dashboard') || lowerText.includes('welcome') || lowerText.includes('account')) {
                 success = true;
             }
             else {
@@ -563,6 +840,7 @@ async function runAllTests(testItems, owner, runId) {
             }
 
             result.success = success;
+            result.status = success ? 'success' : 'fail';
             result.message = success ? 'LOGIN OK' : 'LOGIN FAIL';
             sendLog(success ? `✅ BAŞARILI ${username}` : `❌ BAŞARISIZ ${username}`, success ? 'success' : 'fail', owner.id);
 
@@ -571,7 +849,8 @@ async function runAllTests(testItems, owner, runId) {
             }
 
         } catch (err) {
-            result.success = false;
+            result.status = String(err.message || '').startsWith('CHECK_BLOCKED_HOST') ? 'blocked' : 'error';
+            result.success = null;
             result.message = err.message;
             sendLog(`⚠ HATA ${username}: ${err.message}`, 'error', owner.id);
         } finally {
@@ -586,12 +865,19 @@ async function runAllTests(testItems, owner, runId) {
 
         await saveCheckResult(result, owner);
         await fs.writeFile(resultsFile, JSON.stringify(results, null, 2));
-        await delay(CHECK_PROGRESS_DELAY_MS);
+        if (i < total - 1) {
+            sendLog(`⏱ Sonraki deneme için ${CHECK_ATTEMPT_DELAY_MS / 1000} saniye bekleniyor.`, 'info', owner.id);
+            await delay(CHECK_ATTEMPT_DELAY_MS);
+        }
     }
 
     await browser.close();
-    const okCount = results.filter(x => x.success).length;
-    sendLog(`🏁 BİTİŞ – Başarılı: ${okCount} / Başarısız: ${total - okCount}`, 'info', owner.id);
+    if (browserProxyUrl) await ProxyChain.closeAnonymizedProxy(browserProxyUrl, true).catch(() => {});
+    const okCount = results.filter(x => x.status === 'success').length;
+    const failCount = results.filter(x => x.status === 'fail').length;
+    const mfaCount = results.filter(x => x.status === 'mfa_required').length;
+    const errorCount = results.filter(x => x.status === 'error' || x.status === 'blocked').length;
+    sendLog(`🏁 BİTİŞ – Başarılı: ${okCount} / Başarısız: ${failCount} / 2FA gerekli: ${mfaCount} / Çalıştırılamadı: ${errorCount}`, 'info', owner.id);
     return results;
 }
 
@@ -625,9 +911,27 @@ app.post('/api/start', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Geçerli test verisi yok. Format: url:user:pass' });
         }
 
+        const blockedHosts = [...new Set(testItems
+            .filter(item => !isAllowedCheckUrl(item.baseUrl))
+            .map(item => {
+                try {
+                    return new URL(normalizeUrl(item.baseUrl)).hostname.toLowerCase();
+                } catch {
+                    return item.baseUrl;
+                }
+            }))];
+
+        if (blockedHosts.length > 0) {
+            return res.status(400).json({
+                error: `İzinli olmayan host bulundu: ${blockedHosts.join(', ')}. Test için CHECK_ALLOWED_HOSTS env değerine sadece yetkili QA hostlarını ekleyin.`,
+                allowedHosts: getAllowedHosts()
+            });
+        }
+
+        const proxyConfig = userProxyConfigs.get(req.user.id) || null;
         const runId = crypto.randomUUID();
         res.json({ message: 'Test başladı', total: testItems.length, runId });
-        runAllTests(testItems, req.user, runId).catch(err => {
+        runAllTests(testItems, req.user, runId, proxyConfig).catch(err => {
             console.error('Test runner fatal error:', err);
             sendLog(`❌ Test çalıştırıcı durdu: ${err.message}`, 'error', req.user.id);
         });
@@ -635,6 +939,35 @@ app.post('/api/start', requireAuth, async (req, res) => {
         console.error(err);
         res.status(500).json({ error: err.message });
     }
+});
+
+app.get('/api/proxy', requireAuth, (req, res) => {
+    const config = userProxyConfigs.get(req.user.id);
+    res.json(config ? publicProxyInfo(config, config.geo) : { configured: false });
+});
+
+app.post('/api/proxy', requireAuth, async (req, res) => {
+    try {
+        const parsed = parseSocksProxy(req.body && req.body.connectionString);
+        const geo = await lookupProxyGeo(parsed.url);
+        const config = {
+            ...parsed,
+            geo,
+            verifiedAt: new Date().toISOString()
+        };
+        userProxyConfigs.set(req.user.id, config);
+        sendLog(`🌍 Proxy doğrulandı: ${geo.ip} / ${geo.country} ${geo.city}`.trim(), 'success', req.user.id);
+        res.json({ ok: true, proxy: publicProxyInfo(config, geo) });
+    } catch (err) {
+        userProxyConfigs.delete(req.user.id);
+        sendLog(`❌ Proxy eklenemedi: ${err.message}`, 'error', req.user.id);
+        res.status(400).json({ error: `Proxy eklenemedi: ${err.message}` });
+    }
+});
+
+app.delete('/api/proxy', requireAuth, (req, res) => {
+    userProxyConfigs.delete(req.user.id);
+    res.json({ ok: true });
 });
 
 app.get('/api/results', requireAuth, async (req, res) => {
@@ -653,12 +986,15 @@ app.get('/api/download', requireAuth, async (req, res) => {
         const runId = req.query.runId;
         if (!runId) return res.status(400).send('Run ID yok');
         const data = JSON.parse(await fs.readFile(getResultsFile(req.user.id, runId), 'utf8'));
-        const success = data.filter(x => x.success);
-        const fail = data.filter(x => !x.success);
+        const success = data.filter(x => x.status === 'success' || x.success === true);
+        const fail = data.filter(x => x.status === 'fail' || x.success === false);
+        const error = data.filter(x => x.status === 'error' || x.status === 'blocked');
         let output = '✅ BAŞARILI\n\n';
         success.forEach(x => output += `${x.baseUrl}:${x.username}:${x.password}\n`);
         output += '\n❌ BAŞARISIZ\n\n';
         fail.forEach(x => output += `${x.baseUrl}:${x.username}:${x.password}\n`);
+        output += '\n⚠ ÇALIŞTIRILAMADI / ENGELLENDİ\n\n';
+        error.forEach(x => output += `${x.baseUrl}:${x.username}:${x.password} # ${x.message || x.status}\n`);
         res.setHeader('Content-Disposition', 'attachment; filename=result.txt');
         res.send(output);
     } catch {
@@ -755,6 +1091,60 @@ app.get('/api/admin/session-logs', requireAuth, requireAdmin, async (req, res) =
             .limit(500)
             .toArray();
         res.json(logs);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res) => {
+    res.json({
+        hosts: getAllowedHosts(),
+        envHosts: ENV_ALLOWED_HOSTS,
+        dynamicHosts: [...dynamicAllowedHosts].sort(),
+        rootDomains: CHECK_ALLOWED_ROOT_DOMAINS,
+        persistence: db ? 'mongodb' : 'memory'
+    });
+});
+
+app.post('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const validation = validateAllowedHostCandidate(req.body && req.body.host);
+        if (!validation.ok) return res.status(400).json({ error: validation.error });
+
+        const host = validation.host;
+        dynamicAllowedHosts.add(host);
+        if (db) {
+            await db.collection('allowed_hosts').updateOne(
+                { host },
+                {
+                    $set: {
+                        host,
+                        updatedAt: new Date(),
+                        updatedBy: req.user.username
+                    },
+                    $setOnInsert: {
+                        createdAt: new Date(),
+                        createdBy: req.user.username
+                    }
+                },
+                { upsert: true }
+            );
+        }
+        res.json({ ok: true, host, hosts: getAllowedHosts() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/allowed-hosts/:host', requireAuth, requireAdmin, async (req, res) => {
+    try {
+        const host = normalizeHost(req.params.host);
+        if (ENV_ALLOWED_HOSTS.includes(host)) {
+            return res.status(400).json({ error: 'Env ile gelen host panelden silinemez.' });
+        }
+        dynamicAllowedHosts.delete(host);
+        if (db) await db.collection('allowed_hosts').deleteOne({ host });
+        res.json({ ok: true, host, hosts: getAllowedHosts() });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
