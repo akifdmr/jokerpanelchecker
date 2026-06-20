@@ -52,6 +52,12 @@
         .proxy-status { margin-top: 12px; border: 1px solid #d9e1ec; border-radius: 12px; padding: 12px; background: #f8fafc; }
         .proxy-status.ok { background: #eaf7ee; border-color: #9bd1aa; }
         .proxy-status.fail { background: #fff0f1; border-color: #e4a4aa; }
+        .permission-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 14px; margin-top: 10px; }
+        .permission-option { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+        .permission-option input { width: auto; }
+        .user-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .user-actions button { margin: 0; }
+        .user-permissions { min-width: 300px; }
         .history-table th, .history-table td { vertical-align: top; }
         .history-table td:nth-child(2), .history-table td:nth-child(4), .history-table td:nth-child(7) { max-width: 240px; overflow-wrap: anywhere; }
         .note { font-size: 12px; color: #666; margin-top: 8px; }
@@ -84,6 +90,49 @@
         <button class="danger" onclick="logout()">ÇIKIŞ</button>
     </div>
 
+    <div class="card hidden" id="usersCard">
+        <h3>Kullanıcı ve Yetki Yönetimi</h3>
+        <div class="muted">Kullanıcılar MongoDB üzerinde tutulur. Rol veya izin değişikliği açık oturumlara sonraki istekte uygulanır.</div>
+        <div class="history-toolbar">
+            <div>
+                <label><b>Kullanıcı adı</b></label>
+                <input id="newUsername" autocomplete="off" placeholder="kullanici.adi">
+            </div>
+            <div>
+                <label><b>Rol</b></label>
+                <select id="newUserRole" onchange="renderCreatePermissions()">
+                    <option value="user">Kullanıcı</option>
+                    <option value="admin">Admin</option>
+                </select>
+            </div>
+            <div>
+                <label><b>Şifre</b></label>
+                <input id="newUserPassword" type="password" autocomplete="new-password" placeholder="En az 8 karakter">
+            </div>
+        </div>
+        <div id="newUserPermissions" class="permission-grid"></div>
+        <div style="margin-top: 14px;">
+            <button onclick="createUser()">KULLANICI OLUŞTUR</button>
+            <button class="secondary" onclick="loadUsers()">YENİLE</button>
+        </div>
+        <div class="note" id="usersNote"></div>
+        <div class="table-wrapper" style="margin-top: 16px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Kullanıcı</th>
+                        <th>Rol</th>
+                        <th>Aktif</th>
+                        <th>İzinler</th>
+                        <th>Yeni şifre</th>
+                        <th>İşlem</th>
+                    </tr>
+                </thead>
+                <tbody id="usersBody"></tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="card hidden" id="allowedHostsCard">
         <h3>Yetkili Domainler</h3>
         <div class="muted" id="allowedHostsHelp"></div>
@@ -102,9 +151,9 @@
         <div id="allowedHostsList"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="checkerCard">
         <h2>🔐 Joker Panel Checker </h2>
-        <div>
+        <div id="proxySection">
             <label><b>SOCKS5 Proxy</b></label>
             <div class="flex" style="align-items: end; margin-top: 8px;">
                 <div class="col">
@@ -127,15 +176,15 @@
         </div>
         <div style="margin-top: 15px;">
             <button onclick="loadDemoData()">ÖRNEK DOLDUR</button>
-            <button onclick="startTest()">▶ BAŞLAT</button>
-            <button class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
+            <button id="startButton" onclick="startTest()">▶ BAŞLAT</button>
+            <button id="groupButton" class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
             <button onclick="clearAll()">🧹 TEMİZLE</button>
             <button onclick="downloadResults()">📥 İNDİR</button>
         </div>
         <div class="note">💡 Varsayılan ayarda yalnızca local/dummy hedefler çalışır. Dış QA hostları için sunucuda CHECK_ALLOWED_HOSTS tanımlanmalıdır.</div>
     </div>
 
-    <div class="split">
+    <div class="split" id="resultsSection">
         <div class="table-panel">
             <h3>📊 Sonuçlar (Şifreler Tam Görünür)</h3>
             <div class="table-wrapper">
@@ -148,7 +197,7 @@
         <div class="logs-panel" id="logPanel"><div>⏳ Bekleniyor...</div></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="historyCard">
         <h3 id="historyTitle">📁 Geçmiş</h3>
         <div class="muted" id="historyScope"></div>
         <div style="margin: 12px 0;">
@@ -237,6 +286,7 @@
     const historyBody = document.getElementById('historyBody');
     const sessionLogsBody = document.getElementById('sessionLogsBody');
     const allowedHostsList = document.getElementById('allowedHostsList');
+    const usersBody = document.getElementById('usersBody');
     let eventSource = null;
     let refreshTimer = null;
     let totalTests = 0;
@@ -244,6 +294,12 @@
     let currentRunId = null;
     let historyRows = [];
     let currentHistoryType = 'checks';
+    let permissionCatalog = [];
+    let permissionDefaults = { admin: [], user: [] };
+
+    function hasPermission(permission) {
+        return Boolean(currentUser && Array.isArray(currentUser.permissions) && currentUser.permissions.includes(permission));
+    }
 
     async function apiFetch(url, options = {}) {
         const res = await fetch(url, options);
@@ -277,6 +333,7 @@
         document.getElementById('appRoot').classList.add('hidden');
         document.getElementById('sessionLogsCard').classList.add('hidden');
         document.getElementById('allowedHostsCard').classList.add('hidden');
+        document.getElementById('usersCard').classList.add('hidden');
     }
 
     function showApp(user) {
@@ -285,11 +342,32 @@
         document.getElementById('appRoot').classList.remove('hidden');
         document.getElementById('roleBadge').textContent = user.role.toUpperCase();
         document.getElementById('userLabel').textContent = user.username;
-        document.getElementById('historyScope').textContent = user.role === 'admin'
+        document.getElementById('historyScope').textContent = hasPermission('history.all')
             ? 'Admin görünümü: tüm kullanıcıların yaptığı check kayıtları listelenir.'
             : 'Kullanıcı görünümü: sadece kendi yaptığınız check kayıtları listelenir.';
-        document.getElementById('sessionLogsCard').classList.toggle('hidden', user.role !== 'admin');
-        document.getElementById('allowedHostsCard').classList.toggle('hidden', user.role !== 'admin');
+        document.getElementById('sessionLogsCard').classList.toggle('hidden', !hasPermission('sessions.view'));
+        document.getElementById('allowedHostsCard').classList.toggle('hidden', !hasPermission('hosts.manage'));
+        document.getElementById('usersCard').classList.toggle('hidden', !hasPermission('users.manage'));
+        document.getElementById('checkerCard').classList.toggle('hidden',
+            !hasPermission('checker.run') && !hasPermission('proxy.manage') && !hasPermission('lists.group'));
+        document.getElementById('proxySection').classList.toggle('hidden', !hasPermission('proxy.manage'));
+        document.getElementById('startButton').classList.toggle('hidden', !hasPermission('checker.run'));
+        document.getElementById('groupButton').classList.toggle('hidden', !hasPermission('lists.group'));
+        document.getElementById('resultsSection').classList.toggle('hidden', !hasPermission('checker.results'));
+        document.getElementById('historyCard').classList.toggle('hidden', !hasPermission('history.own'));
+    }
+
+    async function initializeAuthorizedViews() {
+        if (hasPermission('checker.results')) {
+            connectLogStream();
+            await clearAll();
+            await refreshResults();
+        }
+        if (hasPermission('history.own')) await loadHistory('checks');
+        if (hasPermission('proxy.manage')) await loadProxy();
+        if (hasPermission('sessions.view')) await loadSessionLogs();
+        if (hasPermission('hosts.manage')) await loadAllowedHosts();
+        if (hasPermission('users.manage')) await loadUsers();
     }
 
     async function checkSession() {
@@ -300,15 +378,7 @@
         }
         const data = await readJson(res, 'Oturum bilgisi okunamadı.');
         showApp(data.user);
-        connectLogStream();
-        await clearAll();
-        await refreshResults();
-        await loadHistory('checks');
-        await loadProxy();
-        if (data.user.role === 'admin') {
-            await loadSessionLogs();
-            await loadAllowedHosts();
-        }
+        await initializeAuthorizedViews();
     }
 
     async function login() {
@@ -328,15 +398,7 @@
         }
         document.getElementById('loginPassword').value = '';
         showApp(data.user);
-        connectLogStream();
-        await clearAll();
-        await refreshResults();
-        await loadHistory('checks');
-        await loadProxy();
-        if (data.user.role === 'admin') {
-            await loadSessionLogs();
-            await loadAllowedHosts();
-        }
+        await initializeAuthorizedViews();
     }
 
     async function logout() {
@@ -634,7 +696,7 @@
     }
 
     async function loadAllowedHosts() {
-        if (!currentUser || currentUser.role !== 'admin') return;
+        if (!hasPermission('hosts.manage')) return;
         const res = await apiFetch('/api/admin/allowed-hosts');
         const data = await readJson(res, 'Yetkili domainler okunamadı.');
         if (!res.ok) {
@@ -757,7 +819,7 @@
     }
 
     async function loadSessionLogs() {
-        if (!currentUser || currentUser.role !== 'admin') return;
+        if (!hasPermission('sessions.view')) return;
         const res = await apiFetch('/api/admin/session-logs');
         if (!res.ok) {
             const err = await readJson(res, 'Oturum logları cevabı okunamadı.').catch(() => ({}));
@@ -783,6 +845,153 @@
             </tr>`;
             sessionLogsBody.insertAdjacentHTML('beforeend', row);
         });
+    }
+
+    function permissionCheckboxes(selected, prefix, disabled = false) {
+        const selectedSet = new Set(selected || []);
+        return permissionCatalog.map(permission => `
+            <label class="permission-option">
+                <input type="checkbox"
+                    data-permission="${escapeHtml(permission.key)}"
+                    class="${escapeHtml(prefix)}"
+                    ${selectedSet.has(permission.key) ? 'checked' : ''}
+                    ${disabled ? 'disabled' : ''}>
+                ${escapeHtml(permission.label)}
+            </label>
+        `).join('');
+    }
+
+    function selectedPermissions(selector) {
+        return [...document.querySelectorAll(`${selector}:checked`)].map(input => input.dataset.permission);
+    }
+
+    function renderCreatePermissions() {
+        if (!permissionCatalog.length) return;
+        const role = document.getElementById('newUserRole').value;
+        document.getElementById('newUserPermissions').innerHTML = permissionCheckboxes(
+            permissionDefaults[role] || [],
+            'new-user-permission',
+            role === 'admin'
+        );
+    }
+
+    async function loadUsers() {
+        if (!hasPermission('users.manage')) return;
+        const res = await apiFetch('/api/admin/users');
+        const data = await readJson(res, 'Kullanıcılar okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Kullanıcılar okunamadı.');
+            return;
+        }
+        permissionCatalog = data.permissionCatalog || [];
+        permissionDefaults = data.defaults || { admin: [], user: [] };
+        renderCreatePermissions();
+        usersBody.innerHTML = '';
+        if (!data.users.length) {
+            usersBody.innerHTML = '<tr><td colspan="6">Kullanıcı yok</td></tr>';
+            return;
+        }
+        data.users.forEach(user => {
+            const isSelf = user.id === currentUser.id;
+            const permissionClass = `user-permission-${user.id}`;
+            const row = `<tr>
+                <td>
+                    <b>${escapeHtml(user.username)}</b>
+                    <div class="muted">Son giriş: ${escapeHtml(user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Yok')}</div>
+                </td>
+                <td>
+                    <select id="role-${user.id}" onchange="toggleUserPermissionInputs('${user.id}')">
+                        <option value="user" ${user.role === 'user' ? 'selected' : ''}>Kullanıcı</option>
+                        <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option>
+                    </select>
+                </td>
+                <td><label class="permission-option"><input id="active-${user.id}" type="checkbox" ${user.active ? 'checked' : ''} ${isSelf ? 'disabled' : ''}> Aktif</label></td>
+                <td class="user-permissions"><div class="permission-grid" id="permissions-${user.id}">${permissionCheckboxes(user.permissions, permissionClass, user.role === 'admin')}</div></td>
+                <td><input id="password-${user.id}" type="password" autocomplete="new-password" placeholder="Değişmeyecek"></td>
+                <td>
+                    <div class="user-actions">
+                        <button onclick="saveUser('${user.id}')">KAYDET</button>
+                        <button class="danger" onclick="deleteUser('${user.id}')" ${isSelf ? 'disabled' : ''}>SİL</button>
+                    </div>
+                </td>
+            </tr>`;
+            usersBody.insertAdjacentHTML('beforeend', row);
+        });
+    }
+
+    function toggleUserPermissionInputs(userId) {
+        const role = document.getElementById(`role-${userId}`).value;
+        const inputs = document.querySelectorAll(`.user-permission-${userId}`);
+        inputs.forEach(input => {
+            input.disabled = role === 'admin';
+            if (role === 'admin') input.checked = true;
+        });
+    }
+
+    async function createUser() {
+        const role = document.getElementById('newUserRole').value;
+        const payload = {
+            username: document.getElementById('newUsername').value.trim(),
+            password: document.getElementById('newUserPassword').value,
+            role,
+            active: true,
+            permissions: role === 'admin'
+                ? permissionDefaults.admin
+                : selectedPermissions('.new-user-permission')
+        };
+        const res = await apiFetch('/api/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await readJson(res, 'Kullanıcı oluşturma cevabı okunamadı.');
+        const note = document.getElementById('usersNote');
+        if (!res.ok) {
+            note.textContent = data.error || 'Kullanıcı oluşturulamadı.';
+            return;
+        }
+        note.textContent = `${data.user.username} oluşturuldu.`;
+        document.getElementById('newUsername').value = '';
+        document.getElementById('newUserPassword').value = '';
+        await loadUsers();
+    }
+
+    async function saveUser(userId) {
+        const role = document.getElementById(`role-${userId}`).value;
+        const payload = {
+            role,
+            active: document.getElementById(`active-${userId}`).checked,
+            permissions: role === 'admin'
+                ? permissionDefaults.admin
+                : selectedPermissions(`.user-permission-${userId}`),
+            password: document.getElementById(`password-${userId}`).value
+        };
+        const res = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await readJson(res, 'Kullanıcı güncelleme cevabı okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Kullanıcı güncellenemedi.');
+            return;
+        }
+        await loadUsers();
+        if (userId === currentUser.id) {
+            currentUser = data.user;
+            showApp(currentUser);
+        }
+    }
+
+    async function deleteUser(userId) {
+        if (!confirm('Bu kullanıcı silinsin mi?')) return;
+        const res = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+        const data = await readJson(res, 'Kullanıcı silme cevabı okunamadı.');
+        if (!res.ok) {
+            showInlineError(data.error || 'Kullanıcı silinemedi.');
+            return;
+        }
+        await loadUsers();
     }
 
     function renderHistory() {

@@ -10,7 +10,7 @@ const net = require('net');
 process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || path.join(__dirname, '.cache', 'puppeteer');
 
 const puppeteer = require('puppeteer');
-const { MongoClient } = require('mongodb');
+const { MongoClient, ObjectId } = require('mongodb');
 const JSZip = require('jszip');
 const ProxyChain = require('proxy-chain');
 const { SocksProxyAgent } = require('socks-proxy-agent');
@@ -34,6 +34,36 @@ const CHECK_ALLOWED_ROOT_DOMAINS = String(process.env.CHECK_ALLOWED_ROOT_DOMAINS
     .filter(Boolean);
 const SESSION_COOKIE = 'panelcheckers_session';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'panelcheckers-dev-secret-change-me';
+const PERMISSIONS = Object.freeze({
+    CHECKER_RUN: 'checker.run',
+    CHECKER_RESULTS: 'checker.results',
+    PROXY_MANAGE: 'proxy.manage',
+    LISTS_GROUP: 'lists.group',
+    HISTORY_OWN: 'history.own',
+    HISTORY_ALL: 'history.all',
+    USERS_MANAGE: 'users.manage',
+    HOSTS_MANAGE: 'hosts.manage',
+    SESSIONS_VIEW: 'sessions.view'
+});
+const PERMISSION_CATALOG = Object.freeze([
+    { key: PERMISSIONS.CHECKER_RUN, label: 'Checker çalıştırma' },
+    { key: PERMISSIONS.CHECKER_RESULTS, label: 'Checker sonuçlarını görme/indirme' },
+    { key: PERMISSIONS.PROXY_MANAGE, label: 'Proxy yönetimi' },
+    { key: PERMISSIONS.LISTS_GROUP, label: 'Liste gruplama' },
+    { key: PERMISSIONS.HISTORY_OWN, label: 'Kendi geçmişini görme' },
+    { key: PERMISSIONS.HISTORY_ALL, label: 'Tüm kullanıcı geçmişini görme' },
+    { key: PERMISSIONS.USERS_MANAGE, label: 'Kullanıcı yönetimi' },
+    { key: PERMISSIONS.HOSTS_MANAGE, label: 'Yetkili domain yönetimi' },
+    { key: PERMISSIONS.SESSIONS_VIEW, label: 'Oturum loglarını görme' }
+]);
+const ALL_PERMISSIONS = Object.freeze(PERMISSION_CATALOG.map(item => item.key));
+const DEFAULT_USER_PERMISSIONS = Object.freeze([
+    PERMISSIONS.CHECKER_RUN,
+    PERMISSIONS.CHECKER_RESULTS,
+    PERMISSIONS.PROXY_MANAGE,
+    PERMISSIONS.LISTS_GROUP,
+    PERMISSIONS.HISTORY_OWN
+]);
 const BROWSER_HEADLESS = process.env.BROWSER_HEADLESS
     ? !['0', 'false', 'no'].includes(String(process.env.BROWSER_HEADLESS).toLowerCase())
     : IS_PRODUCTION ? 'new' : false;
@@ -89,6 +119,52 @@ function verifyPassword(password, storedHash) {
     return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(candidate, 'hex'));
 }
 
+function normalizeRole(role) {
+    return role === 'admin' ? 'admin' : 'user';
+}
+
+function normalizePermissions(permissions) {
+    if (!Array.isArray(permissions)) return [];
+    const allowed = new Set(ALL_PERMISSIONS);
+    return [...new Set(permissions.map(String).filter(permission => allowed.has(permission)))];
+}
+
+function effectivePermissions(user) {
+    if (normalizeRole(user && user.role) === 'admin') return [...ALL_PERMISSIONS];
+    if (!Array.isArray(user && user.permissions)) return [...DEFAULT_USER_PERMISSIONS];
+    return normalizePermissions(user.permissions);
+}
+
+function publicUser(user) {
+    return {
+        id: String(user._id),
+        username: user.username,
+        role: normalizeRole(user.role),
+        active: user.active !== false,
+        permissions: effectivePermissions(user),
+        createdAt: user.createdAt || null,
+        updatedAt: user.updatedAt || null,
+        lastLoginAt: user.lastLoginAt || null
+    };
+}
+
+function validateUsername(username) {
+    const normalized = normalizeUsername(username);
+    if (!/^[a-z0-9._-]{3,40}$/.test(normalized)) {
+        return { ok: false, error: 'Kullanıcı adı 3-40 karakter olmalı; yalnızca harf, rakam, nokta, tire ve alt çizgi kullanılabilir.' };
+    }
+    return { ok: true, username: normalized };
+}
+
+function validatePassword(password, required = true) {
+    const value = String(password || '');
+    if (!value && !required) return { ok: true, password: '' };
+    if (value.length < 8 || value.length > 128) {
+        return { ok: false, error: 'Şifre 8-128 karakter olmalıdır.' };
+    }
+    return { ok: true, password: value };
+}
+
 function signValue(value) {
     return crypto.createHmac('sha256', SESSION_SECRET).update(value).digest('base64url');
 }
@@ -96,8 +172,7 @@ function signValue(value) {
 function createSessionCookie(user) {
     const payload = Buffer.from(JSON.stringify({
         id: String(user._id),
-        username: user.username,
-        role: user.role
+        issuedAt: Date.now()
     })).toString('base64url');
     return `${payload}.${signValue(payload)}`;
 }
@@ -127,16 +202,28 @@ function getSessionUser(req) {
     }
 }
 
-function requireAuth(req, res, next) {
-    const user = getSessionUser(req);
-    if (!user) return res.status(401).json({ error: 'Giriş gerekli.' });
-    req.user = user;
-    next();
+async function requireAuth(req, res, next) {
+    try {
+        const session = getSessionUser(req);
+        if (!session || !db || !ObjectId.isValid(session.id)) {
+            return res.status(401).json({ error: 'Giriş gerekli.' });
+        }
+        const user = await db.collection('users').findOne({ _id: new ObjectId(session.id) });
+        if (!user || user.active === false) {
+            return res.status(401).json({ error: 'Kullanıcı hesabı aktif değil veya bulunamadı.' });
+        }
+        req.user = publicUser(user);
+        next();
+    } catch (err) {
+        next(err);
+    }
 }
 
-function requireAdmin(req, res, next) {
-    if (req.user && req.user.role === 'admin') return next();
-    return res.status(403).json({ error: 'Admin yetkisi gerekli.' });
+function requirePermission(permission) {
+    return (req, res, next) => {
+        if (req.user && req.user.permissions.includes(permission)) return next();
+        return res.status(403).json({ error: `Bu işlem için yetkiniz yok: ${permission}` });
+    };
 }
 
 function safeFileToken(value, fallback = 'anon') {
@@ -351,57 +438,45 @@ async function initializeAuthCollections() {
     await db.collection('successful_logins').createIndex({ ownerUserId: 1, createdAt: -1 });
     await db.collection('session_logs').createIndex({ createdAt: -1 });
     await db.collection('session_logs').createIndex({ username: 1, createdAt: -1 });
+    await db.collection('user_audit_logs').createIndex({ createdAt: -1 });
     await db.collection('allowed_hosts').createIndex({ host: 1 }, { unique: true });
     const storedHosts = await db.collection('allowed_hosts').find({}, { projection: { host: 1 } }).toArray();
     dynamicAllowedHosts = new Set(storedHosts.map(item => normalizeHost(item.host)).filter(Boolean));
 
-    const seeds = [];
-    if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
-        seeds.push({
-            username: normalizeUsername(process.env.ADMIN_USERNAME),
-            role: 'admin',
-            passwordHash: hashPassword(process.env.ADMIN_PASSWORD),
-            createdAt: new Date()
-        });
-    }
-    if (process.env.USER_USERNAME && process.env.USER_PASSWORD) {
-        seeds.push({
-            username: normalizeUsername(process.env.USER_USERNAME),
-            role: 'user',
-            passwordHash: hashPassword(process.env.USER_PASSWORD),
-            createdAt: new Date()
-        });
-    }
-
-    if (!IS_PRODUCTION && seeds.length === 0) {
-        seeds.push(
-            { username: 'admin', role: 'admin', passwordHash: hashPassword('admin123'), createdAt: new Date() },
-            { username: 'user', role: 'user', passwordHash: hashPassword('user123'), createdAt: new Date() }
+    await users.updateMany(
+        { active: { $exists: false } },
+        { $set: { active: true, updatedAt: new Date() } }
+    );
+    const legacyUsers = await users.find({ permissions: { $exists: false } }).toArray();
+    for (const user of legacyUsers) {
+        await users.updateOne(
+            { _id: user._id },
+            { $set: { permissions: normalizeRole(user.role) === 'admin' ? [...ALL_PERMISSIONS] : [...DEFAULT_USER_PERMISSIONS] } }
         );
-        console.log('⚠ Dev kullanıcıları oluşturuldu: admin/admin123 ve user/user123');
     }
 
-    if (seeds.length > 0) {
-        for (const seed of seeds) {
-            await users.updateOne(
-                { username: seed.username },
-                {
-                    $set: {
-                        role: seed.role,
-                        passwordHash: seed.passwordHash,
-                        updatedAt: new Date()
-                    },
-                    $setOnInsert: {
-                        createdAt: seed.createdAt
-                    }
-                },
-                { upsert: true }
-            );
+    const existingUsers = await users.countDocuments();
+    if (existingUsers === 0) {
+        const bootstrapUsername = process.env.ADMIN_USERNAME || (!IS_PRODUCTION ? 'admin' : '');
+        const bootstrapPassword = process.env.ADMIN_PASSWORD || (!IS_PRODUCTION ? 'admin123' : '');
+        const usernameValidation = validateUsername(bootstrapUsername);
+        const passwordValidation = validatePassword(bootstrapPassword);
+        if (usernameValidation.ok && passwordValidation.ok) {
+            await users.insertOne({
+                username: usernameValidation.username,
+                role: 'admin',
+                permissions: [...ALL_PERMISSIONS],
+                active: true,
+                passwordHash: hashPassword(passwordValidation.password),
+                createdAt: new Date(),
+                updatedAt: new Date()
+            });
+            console.log(`✅ İlk admin MongoDB'ye oluşturuldu: ${usernameValidation.username}`);
+        } else {
+            console.warn('⚠ Users koleksiyonu boş. İlk admin için ADMIN_USERNAME ve en az 8 karakterli ADMIN_PASSWORD tanımlayın.');
         }
-        console.log(`✅ ${seeds.length} auth kullanıcısı env değerlerine göre hazırlandı`);
     } else {
-        const existingUsers = await users.countDocuments();
-        console.log(`✅ Auth kullanıcıları MongoDB'den okunacak. Kayıtlı kullanıcı: ${existingUsers}`);
+        console.log(`✅ Auth tamamen MongoDB'den çalışacak. Kayıtlı kullanıcı: ${existingUsers}`);
     }
 }
 
@@ -428,6 +503,20 @@ async function saveSessionLog(req, event, details = {}) {
     } catch (err) {
         console.error('Session log kayıt hatası:', err.message);
     }
+}
+
+async function saveUserAuditLog(req, action, target, changes = {}) {
+    if (!db) return;
+    await db.collection('user_audit_logs').insertOne({
+        action,
+        actorUserId: req.user.id,
+        actorUsername: req.user.username,
+        targetUserId: target ? String(target._id || target.id || '') : null,
+        targetUsername: target ? target.username : null,
+        changes,
+        ip: getRequestIp(req),
+        createdAt: new Date()
+    });
 }
 
 // ------------------ MONGODB BAĞLANTISI (X509 SERTİFİKA DESTEKLİ) ------------------
@@ -502,7 +591,7 @@ function sendLog(msg, type = 'info', ownerUserId = null) {
     console.log(msg);
 }
 
-app.get('/api/log-stream', requireAuth, (req, res) => {
+app.get('/api/log-stream', requireAuth, requirePermission(PERMISSIONS.CHECKER_RESULTS), (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -599,11 +688,15 @@ app.post('/api/auth/login', async (req, res) => {
         }
 
         const user = await db.collection('users').findOne({ username });
-        if (!user || !verifyPassword(password, user.passwordHash)) {
+        if (!user || user.active === false || !verifyPassword(password, user.passwordHash)) {
             await saveSessionLog(req, 'login_failed', { username, reason: 'invalid_credentials' });
             return res.status(401).json({ error: 'Kullanıcı adı veya şifre hatalı.' });
         }
 
+        await db.collection('users').updateOne(
+            { _id: user._id },
+            { $set: { lastLoginAt: new Date() } }
+        );
         const cookie = createSessionCookie(user);
         const secure = IS_PRODUCTION ? '; Secure' : '';
         res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(cookie)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800${secure}`);
@@ -612,7 +705,7 @@ app.post('/api/auth/login', async (req, res) => {
             username: user.username,
             role: user.role
         });
-        res.json({ user: { id: String(user._id), username: user.username, role: user.role } });
+        res.json({ user: publicUser({ ...user, lastLoginAt: new Date() }) });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -944,7 +1037,7 @@ async function runAllTests(testItems, owner, runId, proxyConfig = null) {
 }
 
 // ------------------ API ------------------
-app.post('/api/start', requireAuth, async (req, res) => {
+app.post('/api/start', requireAuth, requirePermission(PERMISSIONS.CHECKER_RUN), async (req, res) => {
     try {
         let { credsText } = req.body;
         credsText = credsText || '';
@@ -991,12 +1084,12 @@ app.post('/api/start', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/proxy', requireAuth, (req, res) => {
+app.get('/api/proxy', requireAuth, requirePermission(PERMISSIONS.PROXY_MANAGE), (req, res) => {
     const config = userProxyConfigs.get(req.user.id);
     res.json(config ? publicProxyInfo(config, config.geo) : { configured: false });
 });
 
-app.post('/api/proxy', requireAuth, async (req, res) => {
+app.post('/api/proxy', requireAuth, requirePermission(PERMISSIONS.PROXY_MANAGE), async (req, res) => {
     try {
         const parsed = parseSocksProxy(req.body && req.body.connectionString);
         const geo = await lookupProxyGeo(parsed.url);
@@ -1015,12 +1108,12 @@ app.post('/api/proxy', requireAuth, async (req, res) => {
     }
 });
 
-app.delete('/api/proxy', requireAuth, (req, res) => {
+app.delete('/api/proxy', requireAuth, requirePermission(PERMISSIONS.PROXY_MANAGE), (req, res) => {
     userProxyConfigs.delete(req.user.id);
     res.json({ ok: true });
 });
 
-app.get('/api/results', requireAuth, async (req, res) => {
+app.get('/api/results', requireAuth, requirePermission(PERMISSIONS.CHECKER_RESULTS), async (req, res) => {
     try {
         const runId = req.query.runId;
         if (!runId) return res.json([]);
@@ -1031,7 +1124,7 @@ app.get('/api/results', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/download', requireAuth, async (req, res) => {
+app.get('/api/download', requireAuth, requirePermission(PERMISSIONS.CHECKER_RESULTS), async (req, res) => {
     try {
         const runId = req.query.runId;
         if (!runId) return res.status(400).send('Run ID yok');
@@ -1060,7 +1153,7 @@ function safeDomainFilename(domain) {
         .replace(/^_+|_+$/g, '') || 'domainsiz';
 }
 
-app.post('/api/group-download', requireAuth, async (req, res) => {
+app.post('/api/group-download', requireAuth, requirePermission(PERMISSIONS.LISTS_GROUP), async (req, res) => {
     try {
         const groups = req.body && req.body.groups;
         if (!Array.isArray(groups) || groups.length === 0) {
@@ -1096,7 +1189,7 @@ async function historyQueryForUser(req, onlySuccessful = false) {
     if (!db) return [];
     const collection = db.collection(onlySuccessful ? 'successful_logins' : 'check_results');
     const query = {};
-    if (req.user.role !== 'admin') query.ownerUserId = req.user.id;
+    if (!req.user.permissions.includes(PERMISSIONS.HISTORY_ALL)) query.ownerUserId = req.user.id;
     return collection.find(query, {
         projection: {
             passwordLength: 0
@@ -1104,7 +1197,7 @@ async function historyQueryForUser(req, onlySuccessful = false) {
     }).sort({ createdAt: -1 }).limit(500).toArray();
 }
 
-app.get('/api/history/checks', requireAuth, async (req, res) => {
+app.get('/api/history/checks', requireAuth, requirePermission(PERMISSIONS.HISTORY_OWN), async (req, res) => {
     try {
         res.json(await historyQueryForUser(req, false));
     } catch (err) {
@@ -1112,7 +1205,7 @@ app.get('/api/history/checks', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/history/successful', requireAuth, async (req, res) => {
+app.get('/api/history/successful', requireAuth, requirePermission(PERMISSIONS.HISTORY_OWN), async (req, res) => {
     try {
         res.json(await historyQueryForUser(req, true));
     } catch (err) {
@@ -1120,19 +1213,127 @@ app.get('/api/history/successful', requireAuth, async (req, res) => {
     }
 });
 
-app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_MANAGE), async (req, res) => {
     try {
         if (!db) return res.json([]);
         const users = await db.collection('users').find({}, {
             projection: { passwordHash: 0 }
         }).sort({ username: 1 }).toArray();
-        res.json(users);
+        res.json({
+            users: users.map(publicUser),
+            permissionCatalog: PERMISSION_CATALOG,
+            defaults: {
+                admin: [...ALL_PERMISSIONS],
+                user: [...DEFAULT_USER_PERMISSIONS]
+            }
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.get('/api/admin/session-logs', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/admin/users', requireAuth, requirePermission(PERMISSIONS.USERS_MANAGE), async (req, res) => {
+    try {
+        const usernameValidation = validateUsername(req.body && req.body.username);
+        if (!usernameValidation.ok) return res.status(400).json({ error: usernameValidation.error });
+        const passwordValidation = validatePassword(req.body && req.body.password);
+        if (!passwordValidation.ok) return res.status(400).json({ error: passwordValidation.error });
+
+        const role = normalizeRole(req.body && req.body.role);
+        const permissions = role === 'admin'
+            ? [...ALL_PERMISSIONS]
+            : req.body && req.body.permissions === undefined
+                ? [...DEFAULT_USER_PERMISSIONS]
+                : normalizePermissions(req.body.permissions);
+        const now = new Date();
+        const result = await db.collection('users').insertOne({
+            username: usernameValidation.username,
+            passwordHash: hashPassword(passwordValidation.password),
+            role,
+            permissions,
+            active: req.body && req.body.active !== false,
+            createdAt: now,
+            updatedAt: now,
+            createdBy: req.user.username
+        });
+        const user = await db.collection('users').findOne({ _id: result.insertedId });
+        await saveUserAuditLog(req, 'user_created', user, { role, permissions, active: user.active });
+        res.status(201).json({ user: publicUser(user) });
+    } catch (err) {
+        if (err && err.code === 11000) return res.status(409).json({ error: 'Bu kullanıcı adı zaten kayıtlı.' });
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.patch('/api/admin/users/:id', requireAuth, requirePermission(PERMISSIONS.USERS_MANAGE), async (req, res) => {
+    try {
+        if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Geçersiz kullanıcı id.' });
+        const target = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
+        if (!target) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+        const nextRole = req.body.role === undefined ? normalizeRole(target.role) : normalizeRole(req.body.role);
+        const nextActive = req.body.active === undefined ? target.active !== false : Boolean(req.body.active);
+        if (String(target._id) === req.user.id && (nextRole !== 'admin' || !nextActive)) {
+            return res.status(400).json({ error: 'Kendi admin hesabınızı pasif yapamaz veya rolünü düşüremezsiniz.' });
+        }
+        if (normalizeRole(target.role) === 'admin' && (nextRole !== 'admin' || !nextActive)) {
+            const activeAdmins = await db.collection('users').countDocuments({ role: 'admin', active: { $ne: false } });
+            if (activeAdmins <= 1) return res.status(400).json({ error: 'Sistemde en az bir aktif admin kalmalıdır.' });
+        }
+
+        const update = {
+            role: nextRole,
+            active: nextActive,
+            permissions: nextRole === 'admin'
+                ? [...ALL_PERMISSIONS]
+                : req.body.permissions === undefined
+                    ? effectivePermissions(target).filter(permission => ![
+                        PERMISSIONS.USERS_MANAGE,
+                        PERMISSIONS.HOSTS_MANAGE,
+                        PERMISSIONS.SESSIONS_VIEW,
+                        PERMISSIONS.HISTORY_ALL
+                    ].includes(permission))
+                    : normalizePermissions(req.body.permissions),
+            updatedAt: new Date(),
+            updatedBy: req.user.username
+        };
+        const passwordValidation = validatePassword(req.body.password, false);
+        if (!passwordValidation.ok) return res.status(400).json({ error: passwordValidation.error });
+        if (passwordValidation.password) update.passwordHash = hashPassword(passwordValidation.password);
+
+        await db.collection('users').updateOne({ _id: target._id }, { $set: update });
+        const updated = await db.collection('users').findOne({ _id: target._id });
+        await saveUserAuditLog(req, 'user_updated', updated, {
+            role: update.role,
+            active: update.active,
+            permissions: update.permissions,
+            passwordChanged: Boolean(passwordValidation.password)
+        });
+        res.json({ user: publicUser(updated) });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/users/:id', requireAuth, requirePermission(PERMISSIONS.USERS_MANAGE), async (req, res) => {
+    try {
+        if (!ObjectId.isValid(req.params.id)) return res.status(400).json({ error: 'Geçersiz kullanıcı id.' });
+        if (req.params.id === req.user.id) return res.status(400).json({ error: 'Kendi hesabınızı silemezsiniz.' });
+        const target = await db.collection('users').findOne({ _id: new ObjectId(req.params.id) });
+        if (!target) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+        if (normalizeRole(target.role) === 'admin' && target.active !== false) {
+            const activeAdmins = await db.collection('users').countDocuments({ role: 'admin', active: { $ne: false } });
+            if (activeAdmins <= 1) return res.status(400).json({ error: 'Sistemde en az bir aktif admin kalmalıdır.' });
+        }
+        await db.collection('users').deleteOne({ _id: target._id });
+        await saveUserAuditLog(req, 'user_deleted', target);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/session-logs', requireAuth, requirePermission(PERMISSIONS.SESSIONS_VIEW), async (req, res) => {
     try {
         if (!db) return res.json([]);
         const logs = await db.collection('session_logs')
@@ -1146,7 +1347,7 @@ app.get('/api/admin/session-logs', requireAuth, requireAdmin, async (req, res) =
     }
 });
 
-app.get('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.HOSTS_MANAGE), async (req, res) => {
     res.json({
         hosts: getAllowedHosts(),
         envHosts: ENV_ALLOWED_HOSTS,
@@ -1156,7 +1357,7 @@ app.get('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res) 
     });
 });
 
-app.post('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.HOSTS_MANAGE), async (req, res) => {
     try {
         const validation = validateAllowedHostCandidate(req.body && req.body.host);
         if (!validation.ok) return res.status(400).json({ error: validation.error });
@@ -1186,7 +1387,7 @@ app.post('/api/admin/allowed-hosts', requireAuth, requireAdmin, async (req, res)
     }
 });
 
-app.delete('/api/admin/allowed-hosts/:host', requireAuth, requireAdmin, async (req, res) => {
+app.delete('/api/admin/allowed-hosts/:host', requireAuth, requirePermission(PERMISSIONS.HOSTS_MANAGE), async (req, res) => {
     try {
         const host = normalizeHost(req.params.host);
         if (ENV_ALLOWED_HOSTS.includes(host)) {
@@ -1200,7 +1401,7 @@ app.delete('/api/admin/allowed-hosts/:host', requireAuth, requireAdmin, async (r
     }
 });
 
-app.delete('/api/results', requireAuth, async (req, res) => {
+app.delete('/api/results', requireAuth, requirePermission(PERMISSIONS.CHECKER_RESULTS), async (req, res) => {
     try {
         const runId = req.query.runId;
         if (runId) {
