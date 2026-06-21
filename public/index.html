@@ -292,7 +292,7 @@
         <div class="history-toolbar">
             <div>
                 <label><b>Host ekle</b></label>
-                <input id="allowedHostInput" placeholder="login.sirket.com">
+                <textarea id="allowedHostInput" rows="3" placeholder="login.sirket.com&#10;panel.example.net"></textarea>
             </div>
             <div>
                 <button onclick="addAllowedHost()">EKLE</button>
@@ -805,9 +805,12 @@
             showInlineError(data.error || 'Yetkili domainler okunamadı.');
             return;
         }
-        document.getElementById('allowedHostsHelp').textContent = data.rootDomains.length
-            ? `Panelden yalnızca şu kök domainler eklenebilir: ${data.rootDomains.join(', ')}`
-            : 'Panelden dış domain eklemek için CHECK_ALLOWED_ROOT_DOMAINS env değerini tanımlayın.';
+        const rootText = data.rootDomains.length
+            ? `Tanımlı kök domainler: ${data.rootDomains.join(', ')}.`
+            : 'Tanımlı kök domain yok.';
+        document.getElementById('allowedHostsHelp').textContent = data.rootDomainEnforced
+            ? `Panelden yalnızca izinli kök domain altındaki hostlar eklenebilir. ${rootText}`
+            : `Panelden geçerli public domainler eklenebilir. ${rootText} Birden fazla domaini satır satır veya virgülle yapıştırabilirsiniz.`;
         allowedHostsList.innerHTML = '';
         data.hosts.forEach(host => {
             const fromEnv = data.envHosts.includes(host);
@@ -827,17 +830,23 @@
 
     async function addAllowedHost() {
         const input = document.getElementById('allowedHostInput');
-        const host = input.value.trim();
-        if (!host) return;
+        const hosts = input.value
+            .split(/[\n,;]+/)
+            .map(host => host.trim())
+            .filter(Boolean);
+        if (!hosts.length) return;
         const res = await apiFetch('/api/admin/allowed-hosts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ host })
+            body: JSON.stringify({ hosts })
         });
         const data = await readJson(res, 'Host ekleme cevabı okunamadı.');
         if (!res.ok) {
             showInlineError(data.error || 'Host eklenemedi.');
             return;
+        }
+        if (Array.isArray(data.skipped) && data.skipped.length) {
+            showInlineError(`${data.added.length} host eklendi. ${data.skipped.length} host atlandı: ${data.skipped.map(item => `${item.input} (${item.error})`).join(', ')}`);
         }
         input.value = '';
         await loadAllowedHosts();

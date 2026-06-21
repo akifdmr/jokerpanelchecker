@@ -32,6 +32,9 @@ const CHECK_ALLOWED_ROOT_DOMAINS = String(process.env.CHECK_ALLOWED_ROOT_DOMAINS
     .split(',')
     .map(host => normalizeHost(host))
     .filter(Boolean);
+const CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS = ['1', 'true', 'yes'].includes(
+    String(process.env.CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS || '').toLowerCase()
+);
 const SESSION_COOKIE = 'panelcheckers_session';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'panelcheckers-dev-secret-change-me';
 const PERMISSIONS = Object.freeze({
@@ -274,14 +277,28 @@ function validateAllowedHostCandidate(input) {
     if (!/^(localhost|(\d{1,3}\.){3}\d{1,3}|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)$/.test(host)) {
         return { ok: false, error: 'Geçerli bir host girin. Örnek: login.sirket.com' };
     }
-    if (isLocalAllowedHost(host)) return { ok: true, host };
+    if (isLocalAllowedHost(host) || isPrivateIp(host)) {
+        if (ENV_ALLOWED_HOSTS.includes(host)) return { ok: true, host };
+        return { ok: false, error: 'Yerel veya özel ağ hostları yalnızca CHECK_ALLOWED_HOSTS env değeriyle tanımlanabilir.' };
+    }
     if (CHECK_ALLOWED_ROOT_DOMAINS.some(root => isHostUnderRoot(host, root))) return { ok: true, host };
+    if (!CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS) return { ok: true, host };
     return {
         ok: false,
         error: CHECK_ALLOWED_ROOT_DOMAINS.length
             ? `Host izinli kök domain altında değil. İzinli kökler: ${CHECK_ALLOWED_ROOT_DOMAINS.join(', ')}`
-            : 'Şirket domaini eklemek için önce CHECK_ALLOWED_ROOT_DOMAINS env değerini tanımlayın.'
+            : 'Root domain zorunluluğu açık. Domain eklemek için CHECK_ALLOWED_ROOT_DOMAINS env değerini tanımlayın veya CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS değerini kapatın.'
     };
+}
+
+function parseAllowedHostInputs(body) {
+    const values = [];
+    if (Array.isArray(body && body.hosts)) values.push(...body.hosts);
+    if (body && body.host) values.push(body.host);
+    return values
+        .flatMap(value => String(value || '').split(/[\n,;]+/))
+        .map(value => value.trim())
+        .filter(Boolean);
 }
 
 function delay(ms) {
@@ -1353,35 +1370,60 @@ app.get('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.H
         envHosts: ENV_ALLOWED_HOSTS,
         dynamicHosts: [...dynamicAllowedHosts].sort(),
         rootDomains: CHECK_ALLOWED_ROOT_DOMAINS,
+        rootDomainEnforced: CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS,
         persistence: db ? 'mongodb' : 'memory'
     });
 });
 
 app.post('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.HOSTS_MANAGE), async (req, res) => {
     try {
-        const validation = validateAllowedHostCandidate(req.body && req.body.host);
-        if (!validation.ok) return res.status(400).json({ error: validation.error });
+        const inputs = parseAllowedHostInputs(req.body);
+        if (inputs.length === 0) return res.status(400).json({ error: 'Host boş olamaz.' });
 
-        const host = validation.host;
-        dynamicAllowedHosts.add(host);
-        if (db) {
-            await db.collection('allowed_hosts').updateOne(
-                { host },
-                {
-                    $set: {
-                        host,
-                        updatedAt: new Date(),
-                        updatedBy: req.user.username
+        const added = [];
+        const skipped = [];
+        const seen = new Set();
+
+        for (const input of inputs) {
+            const validation = validateAllowedHostCandidate(input);
+            if (!validation.ok) {
+                skipped.push({ input, error: validation.error });
+                continue;
+            }
+
+            const host = validation.host;
+            if (seen.has(host)) continue;
+            seen.add(host);
+
+            dynamicAllowedHosts.add(host);
+            added.push(host);
+            if (db) {
+                await db.collection('allowed_hosts').updateOne(
+                    { host },
+                    {
+                        $set: {
+                            host,
+                            updatedAt: new Date(),
+                            updatedBy: req.user.username
+                        },
+                        $setOnInsert: {
+                            createdAt: new Date(),
+                            createdBy: req.user.username
+                        }
                     },
-                    $setOnInsert: {
-                        createdAt: new Date(),
-                        createdBy: req.user.username
-                    }
-                },
-                { upsert: true }
-            );
+                    { upsert: true }
+                );
+            }
         }
-        res.json({ ok: true, host, hosts: getAllowedHosts() });
+
+        if (added.length === 0) {
+            return res.status(400).json({
+                error: skipped[0] ? skipped[0].error : 'Geçerli host bulunamadı.',
+                skipped,
+                hosts: getAllowedHosts()
+            });
+        }
+        res.json({ ok: true, host: added[0], added, skipped, hosts: getAllowedHosts() });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
