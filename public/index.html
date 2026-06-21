@@ -2,25 +2,70 @@
 <html>
 <head>
     <title>Joker - Panel Login Checker</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <style>
         * { box-sizing: border-box; }
-        body { font-family: system-ui; margin: 20px; background: #f0f2f5; }
-        .container { max-width: 1500px; margin: auto; }
-        .card { background: white; padding: 20px; border-radius: 16px; margin-bottom: 20px; }
+        :root {
+            --navy: #0f1f33;
+            --navy-soft: #172b45;
+            --blue: #2563eb;
+            --blue-dark: #1d4ed8;
+            --surface: #ffffff;
+            --canvas: #f4f7fb;
+            --border: #dce4ef;
+            --text: #172033;
+            --muted: #667085;
+        }
+        body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; margin: 0; background: var(--canvas); color: var(--text); }
+        .container { min-height: 100vh; }
+        .card { background: white; padding: 22px; border: 1px solid var(--border); border-radius: 14px; margin-bottom: 20px; box-shadow: 0 8px 24px rgba(15, 31, 51, .05); }
         .flex { display: flex; gap: 20px; flex-wrap: wrap; }
         .col { flex: 1; min-width: 250px; }
         textarea { width: 100%; font-family: monospace; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; }
-        button { background: #1e466e; color: white; border: none; padding: 8px 18px; border-radius: 30px; cursor: pointer; margin-right: 10px; }
-        button:hover { background: #0f2c46; }
+        button { background: var(--blue); color: white; border: none; padding: 10px 16px; border-radius: 9px; cursor: pointer; margin-right: 8px; font-weight: 700; }
+        button:hover { background: var(--blue-dark); }
         button.secondary { background: #35665c; }
         button.secondary:hover { background: #224a42; }
         button.danger { background: #7d2d2d; }
         button.danger:hover { background: #561b1b; }
         button.active { background: #111827; }
-        input, select { width: 100%; padding: 12px; border-radius: 12px; border: 1px solid #ccc; font-size: 14px; background: white; }
-        .hidden { display: none; }
-        .auth-card { max-width: 430px; margin: 80px auto; }
-        .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+        input, select { width: 100%; padding: 11px 12px; border-radius: 9px; border: 1px solid #cfd8e5; font-size: 14px; background: white; }
+        input:focus, select:focus, textarea:focus { outline: 3px solid rgba(37, 99, 235, .12); border-color: #80a7f8; }
+        .hidden { display: none !important; }
+        .login-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top left, #dbeafe, transparent 38%), var(--canvas); }
+        .auth-card { width: min(430px, 100%); margin: 0; }
+        .auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+        .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; background: var(--blue); color: white; border-radius: 12px; font-weight: 900; }
+        .app-shell { min-height: 100vh; display: grid; grid-template-columns: 250px minmax(0, 1fr); }
+        .sidebar { position: sticky; top: 0; height: 100vh; background: var(--navy); color: white; padding: 24px 16px; display: flex; flex-direction: column; }
+        .sidebar-brand { padding: 0 10px 24px; border-bottom: 1px solid rgba(255,255,255,.1); }
+        .sidebar-brand h2 { margin: 0; font-size: 19px; }
+        .sidebar-brand p { margin: 6px 0 0; color: #9fb0c7; font-size: 12px; }
+        .nav-group { margin-top: 22px; }
+        .nav-label { padding: 0 12px 8px; color: #7f93ad; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+        .nav-button { width: 100%; margin: 3px 0; padding: 11px 12px; border-radius: 9px; background: transparent; color: #c8d5e5; text-align: left; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+        .nav-button:hover { background: rgba(255,255,255,.07); color: white; }
+        .nav-button.active { background: var(--blue); color: white; }
+        .sidebar-user { margin-top: auto; padding: 16px 10px 0; border-top: 1px solid rgba(255,255,255,.1); }
+        .sidebar-user .badge { background: rgba(255,255,255,.12); color: #dce8f7; }
+        .sidebar-user-name { margin-top: 9px; font-weight: 800; overflow-wrap: anywhere; }
+        .logout-button { width: 100%; margin: 14px 0 0; background: rgba(255,255,255,.08); color: #ffd5d5; }
+        .main-area { min-width: 0; }
+        .topbar { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 28px; background: white; border-bottom: 1px solid var(--border); }
+        .topbar h1 { margin: 0; font-size: 22px; }
+        .topbar p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+        .content { padding: 26px 28px; }
+        .page-view { display: none; }
+        .page-view.active { display: block; }
+        .page-heading { margin: 0 0 18px; }
+        .page-heading h2 { margin: 0; }
+        .page-heading p { margin: 6px 0 0; color: var(--muted); }
+        .dashboard-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+        .dashboard-card { border: 1px solid var(--border); border-radius: 14px; background: white; padding: 20px; cursor: pointer; }
+        .dashboard-card:hover { border-color: #93b4f7; box-shadow: 0 10px 26px rgba(37, 99, 235, .08); }
+        .dashboard-card .icon { font-size: 25px; }
+        .dashboard-card h3 { margin: 12px 0 5px; }
+        .dashboard-card p { margin: 0; color: var(--muted); font-size: 13px; }
         .badge { background: #e8eef6; color: #1e466e; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
         .split { display: flex; gap: 24px; margin-top: 20px; flex-wrap: wrap; }
         .table-panel { flex: 2; }
@@ -61,36 +106,140 @@
         .history-table th, .history-table td { vertical-align: top; }
         .history-table td:nth-child(2), .history-table td:nth-child(4), .history-table td:nth-child(7) { max-width: 240px; overflow-wrap: anywhere; }
         .note { font-size: 12px; color: #666; margin-top: 8px; }
+        .mobile-menu { display: none; margin: 0; }
         @media (max-width: 850px) {
             .history-toolbar { grid-template-columns: 1fr; }
+            .app-shell { grid-template-columns: 1fr; }
+            .sidebar { position: fixed; z-index: 20; width: 260px; transform: translateX(-100%); transition: transform .2s ease; }
+            .sidebar.open { transform: translateX(0); }
+            .mobile-menu { display: inline-flex; }
+            .content, .topbar { padding-left: 18px; padding-right: 18px; }
+            .dashboard-grid { grid-template-columns: 1fr; }
+            .split { flex-direction: column; }
         }
     </style>
 </head>
 <body>
 <div class="container">
-    <div class="card auth-card" id="loginCard">
-        <h2>🔐 Giriş</h2>
-        <label><b>Kullanıcı adı</b></label>
-        <input id="loginUsername" autocomplete="username" placeholder="admin veya user">
-        <div style="height: 12px;"></div>
-        <label><b>Şifre</b></label>
-        <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Şifre">
-        <div style="margin-top: 15px;">
-            <button onclick="login()">GİRİŞ YAP</button>
+    <div class="login-shell" id="loginShell">
+        <div class="card auth-card" id="loginCard">
+            <div class="auth-brand">
+                <div class="brand-mark">J</div>
+                <div><b>Joker Panel</b><div class="muted">Güvenli yönetim girişi</div></div>
+            </div>
+            <h2>Hesabınıza giriş yapın</h2>
+            <label><b>Kullanıcı adı</b></label>
+            <input id="loginUsername" autocomplete="username" placeholder="Kullanıcı adınız">
+            <div style="height: 12px;"></div>
+            <label><b>Şifre</b></label>
+            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Şifreniz">
+            <div style="margin-top: 18px;">
+                <button style="width:100%; margin:0;" onclick="login()">GİRİŞ YAP</button>
+            </div>
+            <div class="note" id="loginNote"></div>
         </div>
-        <div class="note" id="loginNote"></div>
     </div>
 
-    <div id="appRoot" class="hidden">
-    <div class="topbar">
-        <div>
-            <span class="badge" id="roleBadge"></span>
-            <span id="userLabel"></span>
-        </div>
-        <button class="danger" onclick="logout()">ÇIKIŞ</button>
-    </div>
+    <div id="appRoot" class="app-shell hidden">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand"><h2>Joker Panel</h2><p>Checker & yönetim merkezi</p></div>
+            <div class="nav-group">
+                <div class="nav-label">Panel</div>
+                <button class="nav-button active" id="nav-dashboard" onclick="navigateTo('dashboard')">⌂ Genel Bakış</button>
+                <button class="nav-button" id="nav-checker" onclick="navigateTo('checker')">▶ Checker İşlemi</button>
+                <button class="nav-button" id="nav-results" onclick="navigateTo('results')">◉ Canlı Sonuçlar</button>
+                <button class="nav-button" id="nav-history" onclick="navigateTo('history')">▤ Raporlar</button>
+            </div>
+            <div class="nav-group">
+                <div class="nav-label">Yönetim</div>
+                <button class="nav-button" id="nav-users" onclick="navigateTo('users')">♟ Kullanıcılar</button>
+                <button class="nav-button" id="nav-hosts" onclick="navigateTo('hosts')">⌁ Yetkili Domainler</button>
+                <button class="nav-button" id="nav-sessions" onclick="navigateTo('sessions')">◷ Oturum Kayıtları</button>
+            </div>
+            <div class="sidebar-user">
+                <span class="badge" id="roleBadge"></span>
+                <div class="sidebar-user-name" id="userLabel"></div>
+                <button class="logout-button" onclick="logout()">Çıkış yap</button>
+            </div>
+        </aside>
 
-    <div class="card hidden" id="usersCard">
+        <main class="main-area">
+            <header class="topbar">
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <button class="mobile-menu" onclick="toggleSidebar()">☰</button>
+                    <div><h1 id="pageTitle">Genel Bakış</h1><p id="pageSubtitle">Yetkiniz olan ekranlara menüden erişebilirsiniz.</p></div>
+                </div>
+            </header>
+            <div class="content">
+                <section class="page-view active" id="view-dashboard">
+                    <div class="page-heading"><h2>Genel Bakış</h2><p>İşlem, rapor ve yönetim ekranlarına hızlı erişim.</p></div>
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card" id="dashboard-checker" onclick="navigateTo('checker')"><div class="icon">▶</div><h3>Checker İşlemi</h3><p>Yeni bir liste yükleyin ve kontrol sürecini başlatın.</p></div>
+                        <div class="dashboard-card" id="dashboard-results" onclick="navigateTo('results')"><div class="icon">◉</div><h3>Canlı Sonuçlar</h3><p>Aktif çalışmanın sonuçlarını ve işlem loglarını izleyin.</p></div>
+                        <div class="dashboard-card" id="dashboard-history" onclick="navigateTo('history')"><div class="icon">▤</div><h3>Raporlar</h3><p>Geçmiş kontrolleri filtreleyin ve inceleyin.</p></div>
+                        <div class="dashboard-card" id="dashboard-users" onclick="navigateTo('users')"><div class="icon">♟</div><h3>Kullanıcı Yönetimi</h3><p>Hesap, rol ve permission ayarlarını yönetin.</p></div>
+                        <div class="dashboard-card" id="dashboard-hosts" onclick="navigateTo('hosts')"><div class="icon">⌁</div><h3>Yetkili Domainler</h3><p>Kontrol çalıştırılabilecek hedefleri yönetin.</p></div>
+                        <div class="dashboard-card" id="dashboard-sessions" onclick="navigateTo('sessions')"><div class="icon">◷</div><h3>Oturum Kayıtları</h3><p>Giriş, hatalı giriş ve çıkış hareketlerini inceleyin.</p></div>
+                    </div>
+                </section>
+
+                <section class="page-view" id="view-checker">
+                    <div class="page-heading"><h2>Checker İşlemi</h2><p>Proxy ve test listesini hazırlayıp yeni bir çalışma başlatın.</p></div>
+                    <div class="card" id="checkerCard">
+                        <div id="proxySection">
+                            <label><b>SOCKS5 Proxy</b></label>
+                            <div class="flex" style="align-items: end; margin-top: 8px;">
+                                <div class="col"><input id="proxyInput" type="password" autocomplete="off" placeholder="socks5://kullanici:sifre@host:port"></div>
+                                <div><button onclick="addProxy()">EKLE</button><button class="danger" onclick="removeProxy()">KALDIR</button></div>
+                            </div>
+                            <div id="proxyStatus" class="proxy-status">Proxy eklenmedi.</div>
+                        </div>
+                        <div style="height: 18px;"></div>
+                        <label><b>URL:Kullanıcı:Şifre listesi</b><br><small>Tek satır veya Şifre / Nick / Bağlantı blokları kabul edilir.</small></label>
+                        <textarea id="creds" rows="13" placeholder="http://127.0.0.1:3000/demo-login:demo:demo123"></textarea>
+                        <div style="margin-top: 15px;">
+                            <button onclick="loadDemoData()">ÖRNEK DOLDUR</button>
+                            <button id="startButton" onclick="startTest()">▶ BAŞLAT</button>
+                            <button id="groupButton" class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
+                            <button onclick="clearAll()">TEMİZLE</button>
+                        </div>
+                        <div class="note">Yalnızca yetkili domainler üzerinde işlem çalıştırılabilir.</div>
+                    </div>
+                </section>
+
+                <section class="page-view" id="view-results">
+                    <div class="page-heading"><h2>Canlı Sonuçlar</h2><p>Aktif çalışmanın sonuçlarını ve çalışma loglarını takip edin.</p></div>
+                    <div class="card" id="resultsSection">
+                        <div style="margin-bottom:14px;"><button onclick="refreshResults()">YENİLE</button><button onclick="downloadResults()">RAPORU İNDİR</button><button class="danger" onclick="clearAll()">TEMİZLE</button></div>
+                        <div class="split">
+                            <div class="table-panel">
+                                <div class="table-wrapper"><table id="resultTable"><thead><tr><th>URL</th><th>Kullanıcı</th><th>Şifre</th><th>Durum</th><th>Mesaj</th></tr></thead><tbody id="tableBody"></tbody></table></div>
+                            </div>
+                            <div class="logs-panel" id="logPanel"><div>Bekleniyor...</div></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="page-view" id="view-history">
+                    <div class="page-heading"><h2>Raporlar</h2><p id="historyScope"></p></div>
+                    <div class="card" id="historyCard">
+                        <h3 id="historyTitle">Check Geçmişi</h3>
+                        <div style="margin: 12px 0;"><button id="historyChecksBtn" onclick="loadHistory('checks')">TÜM CHECK GEÇMİŞİ</button><button id="historySuccessBtn" class="secondary" onclick="loadHistory('successful')">BAŞARILI GEÇMİŞ</button></div>
+                        <div class="history-toolbar">
+                            <div><label><b>Arama</b></label><input id="historySearch" placeholder="Kullanıcı, URL, login, domain veya mesaj ara" oninput="renderHistory()"></div>
+                            <div><label><b>Durum</b></label><select id="historyStatusFilter" onchange="renderHistory()"><option value="all">Tümü</option><option value="success">Başarılı</option><option value="fail">Başarısız</option></select></div>
+                            <div><label><b>Kayıt</b></label><select id="historyLimitFilter" onchange="renderHistory()"><option value="50">Son 50</option><option value="100">Son 100</option><option value="250">Son 250</option><option value="500">Son 500</option></select></div>
+                        </div>
+                        <div class="history-summary">
+                            <div class="summary-box"><b id="historyTotal">0</b><span>Toplam kayıt</span></div><div class="summary-box"><b id="historyOk">0</b><span>Başarılı</span></div><div class="summary-box"><b id="historyFail">0</b><span>Başarısız</span></div><div class="summary-box"><b id="historyUsers">0</b><span>Kullanıcı</span></div>
+                        </div>
+                        <div class="table-wrapper"><table class="history-table"><thead><tr><th>Zaman</th><th>Kullanıcı</th><th>Rol</th><th>Domain</th><th>URL</th><th>Login</th><th>Şifre</th><th>Durum</th><th>Mesaj</th></tr></thead><tbody id="historyBody"></tbody></table></div>
+                    </div>
+                </section>
+
+                <section class="page-view" id="view-users">
+                    <div class="page-heading"><h2>Kullanıcı Yönetimi</h2><p>Hesapları, rolleri, şifreleri ve işlem yetkilerini yönetin.</p></div>
+                    <div class="card" id="usersCard">
         <h3>Kullanıcı ve Yetki Yönetimi</h3>
         <div class="muted">Kullanıcılar MongoDB üzerinde tutulur. Rol veya izin değişikliği açık oturumlara sonraki istekte uygulanır.</div>
         <div class="history-toolbar">
@@ -131,9 +280,12 @@
                 <tbody id="usersBody"></tbody>
             </table>
         </div>
-    </div>
+                    </div>
+                </section>
 
-    <div class="card hidden" id="allowedHostsCard">
+                <section class="page-view" id="view-hosts">
+                    <div class="page-heading"><h2>Yetkili Domainler</h2><p>Checker tarafından erişilebilecek hedef domainleri yönetin.</p></div>
+                    <div class="card" id="allowedHostsCard">
         <h3>Yetkili Domainler</h3>
         <div class="muted" id="allowedHostsHelp"></div>
         <div class="history-toolbar">
@@ -149,111 +301,12 @@
             </div>
         </div>
         <div id="allowedHostsList"></div>
-    </div>
+                    </div>
+                </section>
 
-    <div class="card" id="checkerCard">
-        <h2>🔐 Joker Panel Checker </h2>
-        <div id="proxySection">
-            <label><b>SOCKS5 Proxy</b></label>
-            <div class="flex" style="align-items: end; margin-top: 8px;">
-                <div class="col">
-                    <input id="proxyInput" type="password" autocomplete="off" placeholder="socks5://kullanici:sifre@host:port">
-                </div>
-                <div>
-                    <button onclick="addProxy()">EKLE</button>
-                    <button class="danger" onclick="removeProxy()">KALDIR</button>
-                </div>
-            </div>
-            <div id="proxyStatus" class="proxy-status">Proxy eklenmedi.</div>
-        </div>
-        <div style="height: 18px;"></div>
-        <div class="flex">
-            <div class="col">
-                <label><b>🔑 URL:Kullanıcı:Şifre listesi</b><br>
-                <small>Tek satır veya Şifre / Nick / Bağlantı blokları kabul edilir.</small></label>
-                <textarea id="creds" rows="10" placeholder="http://127.0.0.1:3000/demo-login:demo:demo123&#10;&#10;🔑Şifre: demo123&#10;👤Nick: demo&#10;🔗Bağlantı: http://127.0.0.1:3000/demo-login"></textarea>
-            </div>
-        </div>
-        <div style="margin-top: 15px;">
-            <button onclick="loadDemoData()">ÖRNEK DOLDUR</button>
-            <button id="startButton" onclick="startTest()">▶ BAŞLAT</button>
-            <button id="groupButton" class="secondary" onclick="groupListByDomain()">▦ GRUPLA</button>
-            <button onclick="clearAll()">🧹 TEMİZLE</button>
-            <button onclick="downloadResults()">📥 İNDİR</button>
-        </div>
-        <div class="note">💡 Varsayılan ayarda yalnızca local/dummy hedefler çalışır. Dış QA hostları için sunucuda CHECK_ALLOWED_HOSTS tanımlanmalıdır.</div>
-    </div>
-
-    <div class="split" id="resultsSection">
-        <div class="table-panel">
-            <h3>📊 Sonuçlar (Şifreler Tam Görünür)</h3>
-            <div class="table-wrapper">
-                <table id="resultTable">
-                    <thead><tr><th>URL</th><th>Kullanıcı</th><th>Şifre</th><th>Durum</th><th>Mesaj</th></tr></thead>
-                    <tbody id="tableBody"></tbody>
-                </table>
-            </div>
-        </div>
-        <div class="logs-panel" id="logPanel"><div>⏳ Bekleniyor...</div></div>
-    </div>
-
-    <div class="card" id="historyCard">
-        <h3 id="historyTitle">📁 Geçmiş</h3>
-        <div class="muted" id="historyScope"></div>
-        <div style="margin: 12px 0;">
-            <button id="historyChecksBtn" onclick="loadHistory('checks')">TÜM CHECK GEÇMİŞİ</button>
-            <button id="historySuccessBtn" class="secondary" onclick="loadHistory('successful')">BAŞARILI GEÇMİŞ</button>
-        </div>
-        <div class="history-toolbar">
-            <div>
-                <label><b>Arama</b></label>
-                <input id="historySearch" placeholder="Kullanıcı, URL, login, domain veya mesaj ara" oninput="renderHistory()">
-            </div>
-            <div>
-                <label><b>Durum</b></label>
-                <select id="historyStatusFilter" onchange="renderHistory()">
-                    <option value="all">Tümü</option>
-                    <option value="success">Başarılı</option>
-                    <option value="fail">Başarısız</option>
-                </select>
-            </div>
-            <div>
-                <label><b>Kayıt</b></label>
-                <select id="historyLimitFilter" onchange="renderHistory()">
-                    <option value="50">Son 50</option>
-                    <option value="100">Son 100</option>
-                    <option value="250">Son 250</option>
-                    <option value="500">Son 500</option>
-                </select>
-            </div>
-        </div>
-        <div class="history-summary">
-            <div class="summary-box"><b id="historyTotal">0</b><span>Toplam kayıt</span></div>
-            <div class="summary-box"><b id="historyOk">0</b><span>Başarılı</span></div>
-            <div class="summary-box"><b id="historyFail">0</b><span>Başarısız</span></div>
-            <div class="summary-box"><b id="historyUsers">0</b><span>Kullanıcı</span></div>
-        </div>
-        <div class="table-wrapper">
-            <table class="history-table">
-                <thead>
-                    <tr>
-                        <th>Zaman</th>
-                        <th>Kullanıcı</th>
-                        <th>Rol</th>
-                        <th>Domain</th>
-                        <th>URL</th>
-                        <th>Login</th>
-                        <th>Şifre</th>
-                        <th>Durum</th>
-                        <th>Mesaj</th>
-                    </tr>
-                </thead>
-                <tbody id="historyBody"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <div class="card hidden" id="sessionLogsCard">
+                <section class="page-view" id="view-sessions">
+                    <div class="page-heading"><h2>Oturum Kayıtları</h2><p>Sisteme yapılan giriş, hatalı giriş ve çıkış hareketleri.</p></div>
+                    <div class="card" id="sessionLogsCard">
         <h3>🔎 Oturum Logları</h3>
         <div class="muted">Admin görünümü: giriş, hatalı giriş ve çıkış kayıtları.</div>
         <div style="margin: 12px 0;">
@@ -276,7 +329,10 @@
                 <tbody id="sessionLogsBody"></tbody>
             </table>
         </div>
-    </div>
+                    </div>
+                </section>
+            </div>
+        </main>
     </div>
 </div>
 
@@ -296,9 +352,62 @@
     let currentHistoryType = 'checks';
     let permissionCatalog = [];
     let permissionDefaults = { admin: [], user: [] };
+    let currentView = 'dashboard';
+
+    const viewMeta = {
+        dashboard: ['Genel Bakış', 'Yetkiniz olan ekranlara menüden erişebilirsiniz.'],
+        checker: ['Checker İşlemi', 'Yeni kontrol çalışması hazırlayın ve başlatın.'],
+        results: ['Canlı Sonuçlar', 'Aktif çalışmayı ve işlem loglarını takip edin.'],
+        history: ['Raporlar', 'Geçmiş kontrol sonuçlarını filtreleyip inceleyin.'],
+        users: ['Kullanıcı Yönetimi', 'Hesap, rol ve permission ayarlarını yönetin.'],
+        hosts: ['Yetkili Domainler', 'Checker hedeflerinin erişim kapsamını yönetin.'],
+        sessions: ['Oturum Kayıtları', 'Kimlik doğrulama hareketlerini inceleyin.']
+    };
 
     function hasPermission(permission) {
         return Boolean(currentUser && Array.isArray(currentUser.permissions) && currentUser.permissions.includes(permission));
+    }
+
+    function canAccessView(view) {
+        if (view === 'dashboard') return true;
+        if (view === 'checker') return hasPermission('checker.run') || hasPermission('proxy.manage') || hasPermission('lists.group');
+        if (view === 'results') return hasPermission('checker.results');
+        if (view === 'history') return hasPermission('history.own');
+        if (view === 'users') return hasPermission('users.manage');
+        if (view === 'hosts') return hasPermission('hosts.manage');
+        if (view === 'sessions') return hasPermission('sessions.view');
+        return false;
+    }
+
+    function setNavigationAccess() {
+        ['checker', 'results', 'history', 'users', 'hosts', 'sessions'].forEach(view => {
+            const allowed = canAccessView(view);
+            document.getElementById(`nav-${view}`).classList.toggle('hidden', !allowed);
+            document.getElementById(`dashboard-${view}`).classList.toggle('hidden', !allowed);
+        });
+    }
+
+    function navigateTo(view) {
+        if (!canAccessView(view)) return;
+        currentView = view;
+        document.querySelectorAll('.page-view').forEach(section => section.classList.remove('active'));
+        document.querySelectorAll('.nav-button').forEach(button => button.classList.remove('active'));
+        document.getElementById(`view-${view}`).classList.add('active');
+        document.getElementById(`nav-${view}`).classList.add('active');
+        const meta = viewMeta[view] || viewMeta.dashboard;
+        document.getElementById('pageTitle').textContent = meta[0];
+        document.getElementById('pageSubtitle').textContent = meta[1];
+        document.getElementById('sidebar').classList.remove('open');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        if (view === 'results' && hasPermission('checker.results')) refreshResults();
+        if (view === 'history' && hasPermission('history.own')) loadHistory(currentHistoryType).catch(err => showInlineError(err.message));
+        if (view === 'users' && hasPermission('users.manage')) loadUsers();
+        if (view === 'hosts' && hasPermission('hosts.manage')) loadAllowedHosts();
+        if (view === 'sessions' && hasPermission('sessions.view')) loadSessionLogs();
+    }
+
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
     }
 
     async function apiFetch(url, options = {}) {
@@ -329,32 +438,24 @@
     function showLogin() {
         currentUser = null;
         if (eventSource) eventSource.close();
-        document.getElementById('loginCard').classList.remove('hidden');
+        document.getElementById('loginShell').classList.remove('hidden');
         document.getElementById('appRoot').classList.add('hidden');
-        document.getElementById('sessionLogsCard').classList.add('hidden');
-        document.getElementById('allowedHostsCard').classList.add('hidden');
-        document.getElementById('usersCard').classList.add('hidden');
     }
 
     function showApp(user) {
         currentUser = user;
-        document.getElementById('loginCard').classList.add('hidden');
+        document.getElementById('loginShell').classList.add('hidden');
         document.getElementById('appRoot').classList.remove('hidden');
         document.getElementById('roleBadge').textContent = user.role.toUpperCase();
         document.getElementById('userLabel').textContent = user.username;
         document.getElementById('historyScope').textContent = hasPermission('history.all')
             ? 'Admin görünümü: tüm kullanıcıların yaptığı check kayıtları listelenir.'
             : 'Kullanıcı görünümü: sadece kendi yaptığınız check kayıtları listelenir.';
-        document.getElementById('sessionLogsCard').classList.toggle('hidden', !hasPermission('sessions.view'));
-        document.getElementById('allowedHostsCard').classList.toggle('hidden', !hasPermission('hosts.manage'));
-        document.getElementById('usersCard').classList.toggle('hidden', !hasPermission('users.manage'));
-        document.getElementById('checkerCard').classList.toggle('hidden',
-            !hasPermission('checker.run') && !hasPermission('proxy.manage') && !hasPermission('lists.group'));
         document.getElementById('proxySection').classList.toggle('hidden', !hasPermission('proxy.manage'));
         document.getElementById('startButton').classList.toggle('hidden', !hasPermission('checker.run'));
         document.getElementById('groupButton').classList.toggle('hidden', !hasPermission('lists.group'));
-        document.getElementById('resultsSection').classList.toggle('hidden', !hasPermission('checker.results'));
-        document.getElementById('historyCard').classList.toggle('hidden', !hasPermission('history.own'));
+        setNavigationAccess();
+        navigateTo(canAccessView(currentView) ? currentView : 'dashboard');
     }
 
     async function initializeAuthorizedViews() {
@@ -774,6 +875,7 @@
             totalTests = json.total;
             currentRunId = json.runId;
             window.popupShown = false;
+            navigateTo('results');
             alert(`Test başladı! Toplam ${totalTests} deneme sırayla çalışacak. Yazılan karakterleri net göreceksiniz.`);
 
             if (refreshTimer) clearInterval(refreshTimer);
