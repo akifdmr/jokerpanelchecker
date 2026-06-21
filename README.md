@@ -31,8 +31,12 @@ Optional environment variables:
 - `ADMIN_PASSWORD` (ilk admin için en az 8 karakter)
 - `RESULTS_FILE`
 - `PUPPETEER_CACHE_DIR` (Render default: `/opt/render/project/src/.cache/puppeteer`)
+- `BROWSER_HEADLESS` (Render default: `1`)
+- `CHECK_ALLOWED_HOSTS` (production default: `atrtouristik.com`)
+- `CHECK_ALLOWED_ROOT_DOMAINS` (production default: `atrtouristik.com`)
+- `CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS` (production default: `true`)
 
-The included `render.yaml` sets production mode and Puppeteer's cache directory for Render. Chrome is installed during `npm ci` through the `postinstall` script.
+The included `render.yaml` sets production mode, Puppeteer's cache directory, headless browser mode, and production domain restrictions for Render. Chrome is installed during `npm ci` through the `postinstall` script.
 
 ## Authentication and permissions
 

@@ -617,26 +617,107 @@
         }
     }
 
-    function parseListForGrouping() {
-        const credLines = document.getElementById('creds').value
-            .split('\n')
-            .map(line => line.trim())
-            .filter(line => line && !line.startsWith('###'));
+    function normalizeFieldLabel(value) {
+        return String(value || '')
+            .toLocaleLowerCase('tr-TR')
+            .replace(/[ş]/g, 's')
+            .replace(/[ıiİ]/g, 'i')
+            .replace(/[ğ]/g, 'g')
+            .replace(/[ü]/g, 'u')
+            .replace(/[ö]/g, 'o')
+            .replace(/[ç]/g, 'c')
+            .replace(/[^\p{L}\p{N}]+/gu, '');
+    }
 
-        const items = [];
-        for (const line of credLines) {
-            const urlMatch = line.match(/^(https?:\/\/[^:]+):(.+)$/i);
-            if (urlMatch) {
-                const domain = getDomain(urlMatch[1]);
-                if (domain) {
-                    items.push({ domain, line });
-                    continue;
-                }
-            }
+    function extractLabeledValue(line, labels) {
+        const normalized = String(line || '').trim();
+        const colonIndex = normalized.indexOf(':');
+        if (colonIndex === -1) return '';
+        const label = normalizeFieldLabel(normalized.slice(0, colonIndex));
+        return labels.includes(label) ? normalized.slice(colonIndex + 1).trim() : '';
+    }
 
-            items.push({ domain: 'domainsiz', line });
+    function parseCredentialLineForGrouping(line) {
+        const value = String(line || '').trim();
+        if (!value || value.startsWith('###')) return null;
+
+        const lastColon = value.lastIndexOf(':');
+        const secondLastColon = lastColon > -1 ? value.lastIndexOf(':', lastColon - 1) : -1;
+        if (value.includes('://') || (secondLastColon !== -1 && /^[\w.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(value.slice(0, secondLastColon)))) {
+            if (secondLastColon === -1) return null;
+            return {
+                url: value.slice(0, secondLastColon),
+                username: value.slice(secondLastColon + 1, lastColon),
+                password: value.slice(lastColon + 1)
+            };
         }
 
+        return null;
+    }
+
+    function normalizeCredentialUrl(url) {
+        const raw = String(url || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('//')) return `https:${raw}`;
+        return raw.startsWith('http') ? raw : `https://${raw}`;
+    }
+
+    function formatCredentialItem(item) {
+        return `${normalizeCredentialUrl(item.url)}:${item.username}:${item.password || ''}`;
+    }
+
+    function parseListForGrouping() {
+        const lines = document.getElementById('creds').value.split('\n');
+        const items = [];
+        let block = {};
+
+        const pushItem = item => {
+            if (!item || !item.url || !item.username) return;
+            const domain = getDomain(item.url);
+            items.push({
+                domain: domain || 'domainsiz',
+                line: formatCredentialItem(item)
+            });
+        };
+
+        const flushBlock = () => {
+            if (block.url || block.username || block.password) {
+                pushItem(block);
+                block = {};
+            }
+        };
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('###')) {
+                if (!line) flushBlock();
+                continue;
+            }
+
+            const password = extractLabeledValue(line, ['sifre', 'password', 'parola']);
+            const username = extractLabeledValue(line, ['nick', 'kullanici', 'username', 'user', 'eposta', 'email', 'mail']);
+            const url = extractLabeledValue(line, ['baglanti', 'url', 'link']);
+
+            if (password) {
+                if (block.password && (block.url || block.username)) flushBlock();
+                block.password = password;
+                continue;
+            }
+            if (username) {
+                block.username = username;
+                continue;
+            }
+            if (url) {
+                block.url = url;
+                if (block.username) flushBlock();
+                continue;
+            }
+
+            flushBlock();
+            pushItem(parseCredentialLineForGrouping(line));
+        }
+
+        flushBlock();
         return items;
     }
 
@@ -650,7 +731,8 @@
         const groups = new Map();
         items.forEach(item => {
             if (!groups.has(item.domain)) groups.set(item.domain, []);
-            groups.get(item.domain).push(item.line);
+            const lines = groups.get(item.domain);
+            if (!lines.includes(item.line)) lines.push(item.line);
         });
 
         return [...groups.entries()]

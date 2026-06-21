@@ -763,10 +763,12 @@ function parseCredentialLine(line) {
     let username = null;
     let password = null;
 
-    if (line.includes('://')) {
-        const lastColon = line.lastIndexOf(':');
-        const secondLastColon = lastColon > -1 ? line.lastIndexOf(':', lastColon - 1) : -1;
-        if (secondLastColon === -1) return null;
+    const lastColon = line.lastIndexOf(':');
+    const credentialSearchStart = line.includes('://') ? line.indexOf('://') + 3 : 0;
+    const secondLastColon = lastColon > -1 ? line.lastIndexOf(':', lastColon - 1) : -1;
+    const hasTwoCredentialSeparators = secondLastColon >= credentialSearchStart;
+    if (line.includes('://') || (secondLastColon !== -1 && /^[\w.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(line.substring(0, secondLastColon)))) {
+        if (!hasTwoCredentialSeparators) return null;
         url = line.substring(0, secondLastColon);
         username = line.substring(secondLastColon + 1, lastColon);
         password = line.substring(lastColon + 1);
@@ -787,13 +789,27 @@ function parseCredentialLine(line) {
     return { url, username, password };
 }
 
+function normalizeFieldLabel(value) {
+    return String(value || '')
+        .toLocaleLowerCase('tr-TR')
+        .replace(/[ş]/g, 's')
+        .replace(/[ıiİ]/g, 'i')
+        .replace(/[ğ]/g, 'g')
+        .replace(/[ü]/g, 'u')
+        .replace(/[ö]/g, 'o')
+        .replace(/[ç]/g, 'c')
+        .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
 function extractLabeledValue(line, labels) {
     const normalized = String(line || '').trim();
-    for (const label of labels) {
-        const match = normalized.match(new RegExp(`^[^\\p{L}\\p{N}]*${label}\\s*:\\s*(.+)$`, 'iu'));
-        if (match) return match[1].trim();
-    }
-    return '';
+    const colonIndex = normalized.indexOf(':');
+    if (colonIndex === -1) return '';
+
+    const label = normalizeFieldLabel(normalized.slice(0, colonIndex));
+    if (!labels.includes(label)) return '';
+
+    return normalized.slice(colonIndex + 1).trim();
 }
 
 function parseCredentialText(credsText) {
@@ -821,9 +837,9 @@ function parseCredentialText(credsText) {
             continue;
         }
 
-        const password = extractLabeledValue(line, ['şifre', 'sifre', 'password', 'parola']);
-        const username = extractLabeledValue(line, ['nick', 'kullanıcı', 'kullanici', 'username', 'user']);
-        const url = extractLabeledValue(line, ['bağlantı', 'baglanti', 'url', 'link']);
+        const password = extractLabeledValue(line, ['sifre', 'password', 'parola']);
+        const username = extractLabeledValue(line, ['nick', 'kullanici', 'username', 'user', 'eposta', 'email', 'mail']);
+        const url = extractLabeledValue(line, ['baglanti', 'url', 'link']);
 
         if (password) {
             if (block.password && (block.url || block.username)) flushBlock();

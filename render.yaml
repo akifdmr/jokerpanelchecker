@@ -11,6 +11,14 @@ services:
         value: production
       - key: PUPPETEER_CACHE_DIR
         value: /opt/render/project/src/.cache/puppeteer
+      - key: BROWSER_HEADLESS
+        value: "1"
+      - key: CHECK_ALLOWED_HOSTS
+        value: atrtouristik.com
+      - key: CHECK_ALLOWED_ROOT_DOMAINS
+        value: atrtouristik.com
+      - key: CHECK_ENFORCE_ALLOWED_ROOT_DOMAINS
+        value: "true"
       - key: DATABASE_URL
         sync: false
       - key: MONGODB_USERNAME
