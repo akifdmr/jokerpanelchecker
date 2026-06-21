@@ -1381,6 +1381,7 @@ app.post('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.
         if (inputs.length === 0) return res.status(400).json({ error: 'Host boş olamaz.' });
 
         const added = [];
+        const existing = [];
         const skipped = [];
         const seen = new Set();
 
@@ -1394,6 +1395,11 @@ app.post('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.
             const host = validation.host;
             if (seen.has(host)) continue;
             seen.add(host);
+
+            if (getAllowedHosts().includes(host)) {
+                existing.push(host);
+                continue;
+            }
 
             dynamicAllowedHosts.add(host);
             added.push(host);
@@ -1416,14 +1422,16 @@ app.post('/api/admin/allowed-hosts', requireAuth, requirePermission(PERMISSIONS.
             }
         }
 
-        if (added.length === 0) {
+        if (added.length === 0 && existing.length === 0) {
             return res.status(400).json({
                 error: skipped[0] ? skipped[0].error : 'Geçerli host bulunamadı.',
+                added,
+                existing,
                 skipped,
                 hosts: getAllowedHosts()
             });
         }
-        res.json({ ok: true, host: added[0], added, skipped, hosts: getAllowedHosts() });
+        res.json({ ok: true, host: added[0] || existing[0], added, existing, skipped, hosts: getAllowedHosts() });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

@@ -95,6 +95,9 @@
         .host-row:last-child { border-bottom: 0; }
         .host-tag { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }
         .host-source { color: #667085; font-size: 12px; }
+        .inline-status { margin-top: 10px; border-radius: 10px; padding: 10px 12px; font-size: 13px; background: #edf4ff; color: #1f3f6d; border: 1px solid #c9daf7; }
+        .inline-status.error { background: #fff0f1; color: #842029; border-color: #e4a4aa; }
+        .inline-status.success { background: #eaf7ee; color: #175b2a; border-color: #9bd1aa; }
         .proxy-status { margin-top: 12px; border: 1px solid #d9e1ec; border-radius: 12px; padding: 12px; background: #f8fafc; }
         .proxy-status.ok { background: #eaf7ee; border-color: #9bd1aa; }
         .proxy-status.fail { background: #fff0f1; border-color: #e4a4aa; }
@@ -301,6 +304,7 @@
                 <button class="secondary" onclick="loadAllowedHosts()">YENİLE</button>
             </div>
         </div>
+        <div id="allowedHostStatus" class="inline-status hidden"></div>
         <div id="allowedHostsList"></div>
                     </div>
                 </section>
@@ -434,6 +438,14 @@
         div.className = 'log-error';
         div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
         logPanel.prepend(div);
+    }
+
+    function showAllowedHostStatus(message, type = 'info') {
+        const status = document.getElementById('allowedHostStatus');
+        if (!status) return;
+        status.textContent = message;
+        status.className = `inline-status ${type}`;
+        status.classList.remove('hidden');
     }
 
     function showLogin() {
@@ -802,7 +814,7 @@
         const res = await apiFetch('/api/admin/allowed-hosts');
         const data = await readJson(res, 'Yetkili domainler okunamadı.');
         if (!res.ok) {
-            showInlineError(data.error || 'Yetkili domainler okunamadı.');
+            showAllowedHostStatus(data.error || 'Yetkili domainler okunamadı.', 'error');
             return;
         }
         const rootText = data.rootDomains.length
@@ -842,12 +854,19 @@
         });
         const data = await readJson(res, 'Host ekleme cevabı okunamadı.');
         if (!res.ok) {
-            showInlineError(data.error || 'Host eklenemedi.');
+            const details = Array.isArray(data.skipped) && data.skipped.length
+                ? ` ${data.skipped.map(item => `${item.input}: ${item.error}`).join(' | ')}`
+                : '';
+            showAllowedHostStatus(`${data.error || 'Host eklenemedi.'}${details}`, 'error');
             return;
         }
+        const messages = [];
+        if (Array.isArray(data.added) && data.added.length) messages.push(`${data.added.length} host eklendi`);
+        if (Array.isArray(data.existing) && data.existing.length) messages.push(`${data.existing.length} host zaten kayıtlı`);
         if (Array.isArray(data.skipped) && data.skipped.length) {
-            showInlineError(`${data.added.length} host eklendi. ${data.skipped.length} host atlandı: ${data.skipped.map(item => `${item.input} (${item.error})`).join(', ')}`);
+            messages.push(`${data.skipped.length} host atlandı: ${data.skipped.map(item => `${item.input} (${item.error})`).join(', ')}`);
         }
+        showAllowedHostStatus(messages.join('. ') || 'Host listesi güncellendi.', data.skipped && data.skipped.length ? 'info' : 'success');
         input.value = '';
         await loadAllowedHosts();
     }
@@ -856,9 +875,10 @@
         const res = await apiFetch(`/api/admin/allowed-hosts/${encodeURIComponent(host)}`, { method: 'DELETE' });
         const data = await readJson(res, 'Host silme cevabı okunamadı.');
         if (!res.ok) {
-            showInlineError(data.error || 'Host silinemedi.');
+            showAllowedHostStatus(data.error || 'Host silinemedi.', 'error');
             return;
         }
+        showAllowedHostStatus(`${host} silindi.`, 'success');
         await loadAllowedHosts();
     }
 
